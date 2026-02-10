@@ -150,9 +150,10 @@ func TestLoadJMeterPlanRejectsLossy(t *testing.T) {
 	for _, d := range report.FatalDrops() {
 		elements = append(elements, d.Element)
 	}
-	assert.Contains(t, elements, "ConstantThroughputTimer")
 	assert.Contains(t, elements, "IfController")
 	assert.Contains(t, elements, "JSR223PostProcessor")
+	assert.NotContains(t, elements, "ConstantThroughputTimer",
+		"吞吐量定时器已能映射为目标速率，不该再算致命丢失项")
 
 	t.Run("显式允许后可继续", func(t *testing.T) {
 		cfg, _, err := LoadJMeterPlan("testdata/lossy.jmx", true)
@@ -160,6 +161,9 @@ func TestLoadJMeterPlanRejectsLossy(t *testing.T) {
 		require.NotNil(t, cfg)
 		assert.Equal(t, uint64(20), cfg.Concurrency)
 		assert.Equal(t, uint64(100), cfg.Requests)
+		// 脚本里是 600/分钟，默认 calcMode 为全局共享
+		require.NotNil(t, cfg.Advanced)
+		assert.InDelta(t, 10.0, cfg.Advanced.TargetQPS, 0.01)
 	})
 }
 
@@ -301,4 +305,79 @@ func TestPairsOfHashTree(t *testing.T) {
 	inner := pairsOf(ps[0].Tree)
 	require.Len(t, inner, 1)
 	assert.Equal(t, "B", inner[0].Node.tag(), "层级必须靠兄弟 hashTree 还原")
+}
+
+// TestLoadJMeterPlanHTTPDefaults HTTP 请求默认值须填补采样器留空的字段
+//
+// 回归用：此前把 ConfigTestElement 判为无法导入，而真实脚本极常把域名、端口、
+// 协议统一写在这里、采样器只填 path——那类脚本的全部采样器都会因缺 domain 而失败
+func TestLoadJMeterPlanHTTPDefaults(t *testing.T) {
+	cfg, report, err := LoadJMeterPlan("testdata/defaults.jmx", false)
+	require.NoError(t, err, "报告:\n%s", report)
+
+	assert.Equal(t, "https://api.internal:9443/v2/items", cfg.URL,
+		"只填 path 的采样器应从默认值取到 protocol/domain/port")
+	assert.Equal(t, 5*time.Second, cfg.Timeout, "response_timeout 应映射为请求超时")
+
+	t.Run("吞吐量定时器映射为目标速率", func(t *testing.T) {
+		require.NotNil(t, cfg.Advanced)
+		// 脚本写的是 1200/分钟
+		assert.InDelta(t, 20.0, cfg.Advanced.TargetQPS, 0.01)
+	})
+
+	t.Run("连接超时如实报告为未完整导入", func(t *testing.T) {
+		assert.Contains(t, report.String(), "连接超时")
+	})
+}
+
+// TestJMXThroughputTimerNestedProp doubleProp 的嵌套序列化必须能读到
+//
+// 回归用：JMeter 对 doubleProp 用 <name>/<value> 子节点而非 name 属性，
+// 只认属性式会把限速配置当成"没填"而忽略，导入后按全速发压——
+// 这正是最危险的那类静默差异
+func TestJMXThroughputTimerNestedProp(t *testing.T) {
+	root, _, err := parseJMX([]byte(
+		`<?xml version="1.0"?><jmeterTestPlan version="1.2"><hashTree>` +
+			`<ConstantThroughputTimer testclass="ConstantThroughputTimer" testname="t">` +
+			`<doubleProp><name>throughput</name><value>600.0</value></doubleProp>` +
+			`</ConstantThroughputTimer><hashTree/>` +
+			`</hashTree></jmeterTestPlan>`))
+	require.NoError(t, err)
+
+	timer := pairsOf(root)[0].Node
+	v, ok := timer.prop("throughput")
+	require.True(t, ok, "嵌套式 doubleProp 应能读到")
+	assert.Equal(t, "600.0", v)
+	assert.InDelta(t, 600.0, timer.propFloat("throughput", 0), 0.01)
+}
+
+// TestJMXThroughputCalcModePerThread calcMode=0 时速率须按并发换算
+func TestJMXThroughputCalcModePerThread(t *testing.T) {
+	p := filepath.Join(t.TempDir(), "percalc.jmx")
+	require.NoError(t, os.WriteFile(p, []byte(
+		`<?xml version="1.0"?><jmeterTestPlan version="1.2"><hashTree>`+
+			`<TestPlan testclass="TestPlan" testname="x"/><hashTree>`+
+			`<ThreadGroup testclass="ThreadGroup" testname="g">`+
+			`<stringProp name="ThreadGroup.num_threads">10</stringProp>`+
+			`<elementProp name="ThreadGroup.main_controller" elementType="LoopController">`+
+			`<stringProp name="LoopController.loops">5</stringProp>`+
+			`</elementProp></ThreadGroup><hashTree>`+
+			`<ConstantThroughputTimer testclass="ConstantThroughputTimer" testname="t">`+
+			`<doubleProp><name>throughput</name><value>120.0</value></doubleProp>`+
+			`<intProp name="calcMode">0</intProp>`+
+			`</ConstantThroughputTimer><hashTree/>`+
+			`<HTTPSamplerProxy testclass="HTTPSamplerProxy" testname="s">`+
+			`<stringProp name="HTTPSampler.domain">h.example.com</stringProp>`+
+			`<stringProp name="HTTPSampler.path">/p</stringProp>`+
+			`</HTTPSamplerProxy><hashTree/>`+
+			`</hashTree></hashTree></hashTree></jmeterTestPlan>`), 0o600))
+
+	cfg, report, err := LoadJMeterPlan(p, false)
+	require.NoError(t, err, "报告:\n%s", report)
+	require.NotNil(t, cfg.Advanced)
+
+	// 每线程 120/分钟 = 2/秒，10 个并发的总到达率是 20/秒
+	// 原样照搬会让实际压力只有十分之一
+	assert.InDelta(t, 20.0, cfg.Advanced.TargetQPS, 0.01)
+	assert.Contains(t, report.String(), "calcMode=0", "换算过程须在报告里说明")
 }

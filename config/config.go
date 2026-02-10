@@ -127,6 +127,9 @@ type TransformConfig struct {
 }
 
 // HTTPConfig HTTP协议配置
+// DefaultMaxConnsPerHost 每个 host 的默认最大连接数
+const DefaultMaxConnsPerHost = 100
+
 type HTTPConfig struct {
 	HTTP2           bool `json:"http2" yaml:"http2"`                           // 是否使用HTTP/2
 	KeepAlive       bool `json:"keepalive" yaml:"keepalive"`                   // 是否保持连接
@@ -172,6 +175,12 @@ type AdvancedConfig struct {
 	RampUp       time.Duration `json:"ramp_up" yaml:"ramp_up"`             // 渐进式启动时间
 	RealtimePort int           `json:"realtime_port" yaml:"realtime_port"` // 实时报告服务器端口（默认8088）
 
+	// TargetQPS 目标速率（每秒请求数），0 表示不限速按全速发压
+	//
+	// 定速压测与全速压测回答的是不同问题：全速测的是系统上限，定速测的是
+	// 「在给定到达率下延迟与错误率如何」。后者才是容量规划与 SLO 验证要的
+	TargetQPS float64 `json:"target_qps,omitempty" yaml:"target_qps,omitempty"`
+
 	// DisableTraceHeader 关闭 traceparent 请求头的注入
 	//
 	// 取反向命名，使配置省略时即为"启用"：trace 头是定位问题的主要线索，默认该开
@@ -203,10 +212,13 @@ func DefaultConfig() *Config {
 		Variables:   make(map[string]any),
 		VarResolver: NewVariableResolver(), // 初始化变量解析器
 		HTTP: &HTTPConfig{
-			HTTP2:           false,
-			KeepAlive:       false,
+			HTTP2: false,
+			// 默认开长连接：这本就是此前的实际行为（两个预设客户端都复用连接），
+			// 只是 KeepAlive 字段没被读到。既然现在它真的生效了，默认值必须保持
+			// 原有行为，否则所有未显式配置的用户会突然退化成每请求一条新连接
+			KeepAlive:       true,
 			FollowRedirects: true,
-			MaxConnsPerHost: 100,
+			MaxConnsPerHost: DefaultMaxConnsPerHost,
 		},
 		GRPC: &GRPCConfig{
 			UseReflection: false,

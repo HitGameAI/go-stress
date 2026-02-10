@@ -198,6 +198,12 @@ type jmxConverter struct {
 	// onSampleError 线程组的错误处理策略，决定依赖链的失败传播如何对齐
 	onSampleError   string
 	threadGroupName string
+
+	// httpDefaults HTTP 请求默认值（ConfigTestElement）
+	//
+	// JMeter 脚本极常把域名、端口、协议统一写在这里，采样器只填 path。
+	// 不认它的话，那些采样器会因为「没有 domain」而全部导不进来
+	httpDefaults *jmxNode
 }
 
 // convert 从根 hashTree 转换出配置
@@ -355,6 +361,10 @@ func (c *jmxConverter) walkPlanTree(tree *jmxNode, cfg *Config) int {
 				cfg.ThinkTime = tt
 				c.report.addMapped("%s → 全局思考时间 %s", node.tag(), describeThinkTime(tt))
 			}
+		case "ConstantThroughputTimer", "PreciseThroughputTimer":
+			c.applyThroughputTimer(node, cfg)
+		case "ConfigTestElement":
+			c.applyHTTPDefaults(node, cfg)
 		default:
 			c.dropUnknown(node)
 		}
@@ -448,6 +458,10 @@ func (c *jmxConverter) walkGroupTree(tree *jmxNode, cfg *Config, inherited *Thin
 			}
 		case "CSVDataSet":
 			c.applyCSVDataSet(n, cfg)
+		case "ConstantThroughputTimer", "PreciseThroughputTimer":
+			c.applyThroughputTimer(n, cfg)
+		case "ConfigTestElement":
+			c.applyHTTPDefaults(n, cfg)
 		}
 	}
 	if len(groupHeaders) > 0 {
@@ -472,7 +486,8 @@ func (c *jmxConverter) walkGroupTree(tree *jmxNode, cfg *Config, inherited *Thin
 			}
 
 		// 上面已统一处理过，这里不再重复报告
-		case "HeaderManager", "ConstantTimer", "UniformRandomTimer", "GaussianRandomTimer", "CSVDataSet":
+		case "HeaderManager", "ConstantTimer", "UniformRandomTimer", "GaussianRandomTimer",
+			"CSVDataSet", "ConstantThroughputTimer", "PreciseThroughputTimer", "ConfigTestElement":
 
 		case "Arguments":
 			vars := c.readArguments(n)
@@ -596,8 +611,20 @@ func (c *jmxConverter) buildAPI(n, tree *jmxNode, groupHeaders map[string]string
 
 // samplerURL 由 protocol/domain/port/path 拼出完整 URL
 func (c *jmxConverter) samplerURL(n *jmxNode) (string, error) {
-	path := convertVars(n.propString("HTTPSampler.path", ""))
-	domain := convertVars(n.propString("HTTPSampler.domain", ""))
+	// 空字段回落到 HTTP 请求默认值，与 JMeter 的行为一致：
+	// 默认值只填补采样器留空的字段，不做前缀拼接
+	field := func(name string) string {
+		if v := n.propString(name, ""); v != "" {
+			return convertVars(v)
+		}
+		if c.httpDefaults != nil {
+			return convertVars(c.httpDefaults.propString(name, ""))
+		}
+		return ""
+	}
+
+	path := field("HTTPSampler.path")
+	domain := field("HTTPSampler.domain")
 
 	// path 本身可能已是完整 URL（脚本里常直接写死）
 	if strings.HasPrefix(path, "http://") || strings.HasPrefix(path, "https://") {
@@ -605,17 +632,17 @@ func (c *jmxConverter) samplerURL(n *jmxNode) (string, error) {
 	}
 
 	if domain == "" {
-		return "", fmt.Errorf("采样器没有 domain，且 path 也不是完整 URL，无从得出请求地址" +
-			"（JMeter 可能依赖 HTTP Request Defaults，该元素尚未支持）")
+		return "", fmt.Errorf("采样器与 HTTP 请求默认值里都没有 domain，" +
+			"且 path 也不是完整 URL，无从得出请求地址")
 	}
 
-	scheme := strings.ToLower(convertVars(n.propString("HTTPSampler.protocol", "http")))
+	scheme := strings.ToLower(field("HTTPSampler.protocol"))
 	if scheme != "http" && scheme != "https" {
 		scheme = "http"
 	}
 
 	host := domain
-	if port := convertVars(n.propString("HTTPSampler.port", "")); port != "" && port != "0" {
+	if port := field("HTTPSampler.port"); port != "" && port != "0" {
 		// 默认端口不写进 URL，保持与脚本观感一致
 		if !(scheme == "http" && port == "80") && !(scheme == "https" && port == "443") {
 			host = domain + ":" + port
@@ -1015,8 +1042,6 @@ func (c *jmxConverter) dropUnknown(n *jmxNode) {
 
 	// 会改变施加的负载：静默忽略必然得出错误结论
 	fatal := map[string]string{
-		"ConstantThroughputTimer":   "吞吐量定时器把负载限制为固定速率，go-stress 没有限速能力，忽略它会按全速发压",
-		"PreciseThroughputTimer":    "精确吞吐量定时器同上，go-stress 没有限速能力",
 		"PoissonRandomTimer":        "泊松分布定时器没有对应的思考时间类型",
 		"SyncTimer":                 "集合点会把请求攒成批次再齐发，忽略它会改变请求的时间分布",
 		"ThroughputController":      "吞吐量控制器按比例裁剪请求，忽略它会改变各请求的占比",
@@ -1035,7 +1060,6 @@ func (c *jmxConverter) dropUnknown(n *jmxNode) {
 		"BeanShellPreProcessor":     "BeanShell 前置处理器可改写请求内容，无法转换",
 		"BeanShellPostProcessor":    "BeanShell 后置处理器可改写提取结果，无法转换",
 		"BeanShellSampler":          "BeanShell 采样器自行发起请求，无法转换",
-		"ConfigTestElement":         "HTTP Request Defaults 为采样器提供缺省的域名与路径，缺了它可能拼不出完整 URL",
 		"AuthManager":               "HTTP 授权管理器会自动附加认证头，缺了它请求可能全部被拒",
 		"CookieManager":             "Cookie 管理器维护会话，缺了它依赖登录态的请求会失败",
 		"TransactionController":     "事务控制器会聚合子请求的耗时统计，指标口径与导入后不同",
@@ -1138,4 +1162,108 @@ func describeThinkTime(c *ThinkTimeConfig) string {
 	default:
 		return c.Delay.String()
 	}
+}
+
+// applyThroughputTimer 把吞吐量定时器转为目标速率
+//
+// JMeter 的 throughput 单位是「每分钟请求数」，此处换成每秒
+// 它与思考时间是两套机制：思考时间约束的是单个虚拟用户的操作间隔（闭环），
+// 吞吐量定时器约束的是全局到达率（开环），两者可以共存
+func (c *jmxConverter) applyThroughputTimer(n *jmxNode, cfg *Config) {
+	perMinute := n.propFloat("throughput", 0)
+	if perMinute <= 0 {
+		// PreciseThroughputTimer 用的是另一组字段名
+		perMinute = n.propFloat("throughputPeriod", 0)
+		if perMinute <= 0 {
+			c.report.drop(JMXDropWarn, n.tag(), n.label(), "吞吐量定时器没有有效的速率值，已忽略")
+			return
+		}
+	}
+
+	qps := perMinute / 60
+
+	// calcMode 决定脚本里的速率是「全局共享」还是「每线程各自」：
+	//   0 = 仅当前线程（每个线程各跑这个速率）
+	//   1~4 = 当前线程组内/全部线程共享（含 shared 变体）
+	// go-stress 的限流器是全局共享的，对应 1 及以上。mode=0 时总到达率应为
+	// 速率 × 并发数，据此换算而非原样照搬——照搬会让实际压力小到并发倍数分之一
+	if n.propInt("calcMode", 1) == 0 {
+		threads := cfg.Concurrency
+		if threads == 0 {
+			threads = 1
+		}
+		total := qps * float64(threads)
+		c.report.drop(JMXDropWarn, n.tag(), n.label(),
+			fmt.Sprintf("calcMode=0 表示每个线程各跑 %.2f/s，而 go-stress 只有全局速率；"+
+				"已按并发 %d 换算为全局 %.2f/s", qps, threads, total))
+		qps = total
+	}
+
+	if cfg.Advanced == nil {
+		cfg.Advanced = &AdvancedConfig{}
+	}
+	if cfg.Advanced.TargetQPS > 0 {
+		c.report.drop(JMXDropWarn, n.tag(), n.label(),
+			fmt.Sprintf("已有目标速率 %.2f/s，此处的 %.2f/s 被忽略；go-stress 只有一个全局速率",
+				cfg.Advanced.TargetQPS, qps))
+		return
+	}
+
+	cfg.Advanced.TargetQPS = qps
+
+	c.report.addMapped("%s → 定速 %.2f 请求/秒（脚本写的是 %.0f/分钟）", n.tag(), qps, perMinute)
+}
+
+// applyHTTPDefaults 记录 HTTP 请求默认值（ConfigTestElement / HttpDefaultsGui）
+//
+// JMeter 脚本极常把域名、端口、协议统一写在这里，采样器只填 path。
+// 之前把它判为无法导入，等于让这类脚本的全部采样器都因缺 domain 而失败
+func (c *jmxConverter) applyHTTPDefaults(n *jmxNode, cfg *Config) {
+	// ConfigTestElement 是个通用标签，HTTP 默认值只是它的一种用法；
+	// 靠是否带 HTTPSampler.* 字段来判别，比认 guiclass 更宽容
+	hasHTTPFields := false
+	for _, name := range []string{
+		"HTTPSampler.domain", "HTTPSampler.port", "HTTPSampler.protocol",
+		"HTTPSampler.path", "HTTPSampler.response_timeout", "HTTPSampler.connect_timeout",
+	} {
+		if v, ok := n.prop(name); ok && v != "" {
+			hasHTTPFields = true
+			break
+		}
+	}
+	if !hasHTTPFields {
+		c.report.drop(JMXDropWarn, n.tag(), n.label(),
+			"该配置元件没有 HTTP 相关字段，无法判断其作用，已忽略")
+		return
+	}
+
+	if c.httpDefaults != nil {
+		c.report.drop(JMXDropWarn, n.tag(), n.label(),
+			"存在多份 HTTP 请求默认值，后者已忽略；go-stress 只保留一份")
+		return
+	}
+	c.httpDefaults = n
+
+	var parts []string
+	if v := n.propString("HTTPSampler.protocol", ""); v != "" {
+		parts = append(parts, "protocol="+v)
+	}
+	if v := n.propString("HTTPSampler.domain", ""); v != "" {
+		parts = append(parts, "domain="+v)
+	}
+	if v := n.propString("HTTPSampler.port", ""); v != "" && v != "0" {
+		parts = append(parts, "port="+v)
+	}
+
+	// 响应超时映射为请求超时；连接超时没有独立配置项
+	if ms := n.propInt("HTTPSampler.response_timeout", 0); ms > 0 {
+		cfg.Timeout = time.Duration(ms) * time.Millisecond
+		parts = append(parts, "timeout="+cfg.Timeout.String())
+	}
+	if ms := n.propInt("HTTPSampler.connect_timeout", 0); ms > 0 {
+		c.report.drop(JMXDropWarn, n.tag(), n.label(),
+			fmt.Sprintf("连接超时 %dms 没有独立配置项，已并入请求整体超时", ms))
+	}
+
+	c.report.addMapped("HTTP 请求默认值「%s」→ %s", n.label(), strings.Join(parts, " "))
 }

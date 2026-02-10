@@ -13,6 +13,8 @@ package protocol
 import (
 	"context"
 	"fmt"
+	"net"
+	"net/http"
 	"net/url"
 	"time"
 
@@ -31,25 +33,63 @@ type HTTPClient struct {
 func NewHTTPClient(cfg *config.Config) (*HTTPClient, error) {
 	if cfg.HTTP == nil {
 		cfg.HTTP = &config.HTTPConfig{
-			MaxConnsPerHost: 100,
+			KeepAlive:       true,
+			MaxConnsPerHost: config.DefaultMaxConnsPerHost,
 			FollowRedirects: true,
 		}
 	}
 
-	// 使用 go-toolbox 的 httpx 客户端
-	var client *httpx.Client
-	if cfg.HTTP.KeepAlive {
-		// 自定义配置的HTTP客户端，支持长连接
-		client = httpx.NewCustomDefaultClient()
-	} else {
-		// 默认客户端
-		client = httpx.NewDefaultHttpClient()
-	}
-
 	return &HTTPClient{
 		config: cfg,
-		client: client,
+		client: httpx.NewHttpClient(buildHTTPClient(cfg.HTTP)),
 	}, nil
+}
+
+// buildHTTPClient 按配置构造底层 http.Client
+//
+// 此前只在 httpx 的两个预设客户端之间二选一，于是 HTTPConfig 的四个字段里
+// 有三个（HTTP2 / FollowRedirects / MaxConnsPerHost）根本没人读，而 KeepAlive
+// 也没起到它名字所说的作用：两个预设客户端都复用连接，差别只在空闲连接池大小。
+// 实测 100 个请求在 keepalive=false 下仍只用了 15 条 TCP 连接——真关掉应是 100 条，
+// 于是「测量建连开销」这个用途被静默破坏
+func buildHTTPClient(cfg *config.HTTPConfig) *http.Client {
+	maxConns := cfg.MaxConnsPerHost
+	if maxConns <= 0 {
+		maxConns = config.DefaultMaxConnsPerHost
+	}
+
+	transport := &http.Transport{
+		Proxy: http.ProxyFromEnvironment,
+		DialContext: (&net.Dialer{
+			Timeout:   30 * time.Second,
+			KeepAlive: 60 * time.Second,
+		}).DialContext,
+		MaxConnsPerHost: maxConns,
+		// 空闲连接池必须与并发上限同量级：标准库默认每 host 只留 2 条空闲连接，
+		// 压测时绝大多数连接刚归还就被关掉，退化成频繁重建
+		MaxIdleConnsPerHost:   maxConns,
+		MaxIdleConns:          0, // 0 表示不限总数，由每 host 的上限约束
+		IdleConnTimeout:       60 * time.Second,
+		TLSHandshakeTimeout:   10 * time.Second,
+		ExpectContinueTimeout: time.Second,
+		DisableKeepAlives:     !cfg.KeepAlive,
+		// 不设 TLSClientConfig：一旦设置，ForceAttemptHTTP2 会被标准库忽略，
+		// HTTP/2 协商便无从发生
+		ForceAttemptHTTP2: cfg.HTTP2,
+	}
+
+	client := &http.Client{Transport: transport}
+	if !cfg.FollowRedirects {
+		// 返回 ErrUseLastResponse 而非报错：压测关心的是 3xx 本身的耗时与状态码，
+		// 把重定向响应原样交回即可
+		client.CheckRedirect = func(*http.Request, []*http.Request) error {
+			return http.ErrUseLastResponse
+		}
+	}
+
+	// 不设 client.Timeout：超时已由每个请求的 ctx 承载（见 Send），
+	// 两套 deadline 并存只会让超时错误的来源难以分辨
+	return client
 }
 
 // Connect HTTP无需显式连接

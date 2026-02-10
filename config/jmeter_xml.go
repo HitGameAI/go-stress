@@ -66,19 +66,56 @@ func (n *jmxNode) isEnabled() bool {
 	return n.Enabled != "false"
 }
 
+// propTags 承载属性值的标签
+var propTags = map[string]bool{
+	"stringProp": true, "boolProp": true, "intProp": true,
+	"longProp": true, "doubleProp": true, "floatProp": true,
+}
+
 // prop 取某个 name 的属性值（直接子节点，去首尾空白）
+//
+// JMeter 有两种序列化形式，必须都认：
+//
+//	<stringProp name="k">v</stringProp>              属性式，绝大多数类型
+//	<doubleProp><name>k</name><value>v</value></doubleProp>   嵌套式
+//
+// 后者出现在 doubleProp / floatProp 上（ConstantThroughputTimer 的 throughput
+// 正是这种）。只认属性式会让这些值静默读不到——限速配置被当作"没填"而忽略，
+// 导入后按全速发压，这正是最危险的那类静默差异
 func (n *jmxNode) prop(name string) (string, bool) {
 	for i := range n.Children {
 		c := &n.Children[i]
-		if c.Name != name {
+		if !propTags[c.tag()] {
 			continue
 		}
-		switch c.tag() {
-		case "stringProp", "boolProp", "intProp", "longProp", "doubleProp", "floatProp":
+
+		// 属性式
+		if c.Name == name {
 			return strings.TrimSpace(c.Text), true
+		}
+
+		// 嵌套式：键在 <name> 子节点，值在 <value> 子节点
+		if c.Name == "" {
+			if k, v, ok := c.nestedNameValue(); ok && k == name {
+				return v, true
+			}
 		}
 	}
 	return "", false
+}
+
+// nestedNameValue 读取嵌套式属性的键值对
+func (n *jmxNode) nestedNameValue() (key, value string, ok bool) {
+	for i := range n.Children {
+		switch n.Children[i].tag() {
+		case "name":
+			key = strings.TrimSpace(n.Children[i].Text)
+		case "value":
+			value = strings.TrimSpace(n.Children[i].Text)
+			ok = true
+		}
+	}
+	return key, value, ok && key != ""
 }
 
 // propString 取字符串属性，缺失时返回 def

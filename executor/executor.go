@@ -125,7 +125,14 @@ func NewExecutor(cfg *config.Config, storageMode StorageMode, storagePath string
 			"recycle", csvSource.Recycle())
 	}
 
-	// 6. 创建调度器
+	// 6. 创建速率限流器（目标速率为 0 时返回 nil，热路径上零成本）
+	var limiter *RateLimiter
+	if e.config.Advanced != nil && e.config.Advanced.TargetQPS > 0 {
+		limiter = NewRateLimiter(e.config.Advanced.TargetQPS)
+		e.logger.InfoKV("🚦 定速压测已启用", "target_qps", limiter.QPS())
+	}
+
+	// 7. 创建调度器
 	var rampUp time.Duration
 	if e.config.Advanced != nil {
 		rampUp = e.config.Advanced.RampUp
@@ -147,6 +154,7 @@ func NewExecutor(cfg *config.Config, storageMode StorageMode, storagePath string
 
 		ThinkTime: e.config.ThinkTime,
 		CSVSource: csvSource,
+		Limiter:   limiter,
 	})
 
 	return e, nil

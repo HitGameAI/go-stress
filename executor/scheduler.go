@@ -38,6 +38,7 @@ type Scheduler struct {
 
 	thinkTime *config.ThinkTimeConfig // 全局思考时间
 	csvSource *CSVSource              // CSV 数据源，全部 Worker 共享
+	limiter   *RateLimiter            // 速率限流器，全部 Worker 共享
 }
 
 // SchedulerConfig 调度器配置
@@ -57,6 +58,7 @@ type SchedulerConfig struct {
 
 	ThinkTime *config.ThinkTimeConfig // 全局思考时间（可选）
 	CSVSource *CSVSource              // CSV 数据源（可选）
+	Limiter   *RateLimiter            // 速率限流器（可选）
 }
 
 // NewScheduler 创建调度器
@@ -83,6 +85,7 @@ func NewScheduler(cfg SchedulerConfig) *Scheduler {
 
 		thinkTime: cfg.ThinkTime,
 		csvSource: cfg.CSVSource,
+		limiter:   cfg.Limiter,
 	}
 }
 
@@ -160,6 +163,7 @@ func (s *Scheduler) runWorker(ctx context.Context, workerID uint64) error {
 
 		ThinkTime: s.thinkTime,
 		CSVSource: s.csvSource,
+		Limiter:   s.limiter,
 	}, s.varResolver)
 
 	// 运行worker

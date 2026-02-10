@@ -88,6 +88,9 @@ var (
 	// 链路追踪
 	noTraceHeader bool // 不注入 traceparent 请求头
 
+	// 定速压测
+	targetQPS float64 // 目标速率（每秒请求数），0 表示不限速
+
 	// 内存限制
 	maxMemory string // 内存使用阈值
 
@@ -145,7 +148,9 @@ func init() {
 
 	// HTTP参数
 	flag.BoolVar(&http2, "http2", false, "使用HTTP/2")
-	flag.BoolVar(&keepalive, "keepalive", false, "使用长连接")
+	// 默认 true：长连接本就是此前的实际行为，而该标志此前并未真正生效
+	// 需要测量建连开销时显式 -keepalive=false
+	flag.BoolVar(&keepalive, "keepalive", true, "使用长连接（-keepalive=false 可关闭以测量建连开销）")
 
 	// gRPC参数
 	flag.BoolVar(&grpcReflection, "grpc-reflection", false, "使用gRPC反射")
@@ -172,6 +177,9 @@ func init() {
 
 	// 内存限制
 	flag.StringVar(&maxMemory, "max-memory", "", "内存使用阈值，超过后自动停止测试 (如: 1GB, 512MB, 2048KB)")
+
+	// 定速压测
+	flag.Float64Var(&targetQPS, "qps", 0, "目标速率（每秒请求数），0 表示全速发压；定速用于测「给定到达率下延迟如何」")
 
 	// 分布式参数
 	flag.Var(&mode, "mode", "运行模式 (standalone/master/slave)")
@@ -273,11 +281,12 @@ func buildConfigFromFlags() *config.Config {
 	cfg.Timeout = timeout
 	cfg.Body = body
 
-	// 链路追踪开关（DefaultConfig 已给出 Advanced，此处只覆盖本项）
+	// DefaultConfig 已给出 Advanced，此处只覆盖本函数负责的几项
 	if cfg.Advanced == nil {
 		cfg.Advanced = &config.AdvancedConfig{}
 	}
 	cfg.Advanced.DisableTraceHeader = noTraceHeader
+	cfg.Advanced.TargetQPS = targetQPS
 
 	// 解析Headers
 	cfg.Headers = make(map[string]string)

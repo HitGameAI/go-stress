@@ -71,6 +71,9 @@ type Worker struct {
 	// csv CSV 数据源的本地取数游标，未配置数据源时为 nil
 	csv *csvCursor
 
+	// limiter 全局共享的速率限流器，未配置目标速率时为 nil
+	limiter *RateLimiter
+
 	// extractorCache 按 API 名缓存提取器管理器
 	//
 	// NewExtractorManager 的构造成本很高：内部 NewVariableResolver 要建一张近百项的
@@ -98,6 +101,7 @@ type WorkerConfig struct {
 
 	ThinkTime *config.ThinkTimeConfig // 全局思考时间（可选）
 	CSVSource *CSVSource              // CSV 数据源（可选，全部 Worker 共享）
+	Limiter   *RateLimiter            // 速率限流器（可选，全部 Worker 共享）
 }
 
 // NewWorker 创建Worker
@@ -125,6 +129,7 @@ func NewWorker(cfg WorkerConfig, varResolver *config.VariableResolver) *Worker {
 		think:     newThinkTimer(),
 		thinkTime: cfg.ThinkTime.Normalize(),
 		csv:       newCSVCursor(cfg.CSVSource),
+		limiter:   cfg.Limiter,
 
 		extractorCache: make(map[string]*ExtractorManager),
 	}
@@ -292,6 +297,14 @@ func (w *Worker) executeRequestUnified(ctx context.Context, source RequestSource
 			req.Headers = make(map[string]string, 1)
 		}
 		req.Headers[HeaderTraceparent] = traceparent
+	}
+
+	// 定速压测：等到本请求被允许发出为止
+	//
+	// 放在真正调用 handler 之前、变量替换之后：等待期间不占用任何连接，
+	// 且被限流推迟的时间不会被计入请求耗时
+	if !w.limiter.Wait(ctx) {
+		return
 	}
 
 	// 执行请求（通过中间件链）

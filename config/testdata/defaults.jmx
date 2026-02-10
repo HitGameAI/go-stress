@@ -1,0 +1,40 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<jmeterTestPlan version="1.2" properties="5.0" jmeter="5.6.3">
+  <hashTree>
+    <TestPlan testclass="TestPlan" testname="默认值与限速" enabled="true"/>
+    <hashTree>
+      <ConfigTestElement guiclass="HttpDefaultsGui" testclass="ConfigTestElement" testname="HTTP请求默认值" enabled="true">
+        <elementProp name="HTTPsampler.Arguments" elementType="Arguments">
+          <collectionProp name="Arguments.arguments"/>
+        </elementProp>
+        <stringProp name="HTTPSampler.domain">api.internal</stringProp>
+        <stringProp name="HTTPSampler.port">9443</stringProp>
+        <stringProp name="HTTPSampler.protocol">https</stringProp>
+        <stringProp name="HTTPSampler.response_timeout">5000</stringProp>
+        <stringProp name="HTTPSampler.connect_timeout">2000</stringProp>
+      </ConfigTestElement>
+      <hashTree/>
+      <ThreadGroup testclass="ThreadGroup" testname="组" enabled="true">
+        <stringProp name="ThreadGroup.num_threads">30</stringProp>
+        <elementProp name="ThreadGroup.main_controller" elementType="LoopController">
+          <stringProp name="LoopController.loops">50</stringProp>
+        </elementProp>
+      </ThreadGroup>
+      <hashTree>
+        <ConstantThroughputTimer testclass="ConstantThroughputTimer" testname="限速 1200/分钟" enabled="true">
+          <doubleProp>
+            <name>throughput</name>
+            <value>1200.0</value>
+          </doubleProp>
+          <intProp name="calcMode">1</intProp>
+        </ConstantThroughputTimer>
+        <hashTree/>
+        <HTTPSamplerProxy testclass="HTTPSamplerProxy" testname="只填路径" enabled="true">
+          <stringProp name="HTTPSampler.path">/v2/items</stringProp>
+          <stringProp name="HTTPSampler.method">GET</stringProp>
+        </HTTPSamplerProxy>
+        <hashTree/>
+      </hashTree>
+    </hashTree>
+  </hashTree>
+</jmeterTestPlan>
