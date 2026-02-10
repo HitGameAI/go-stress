@@ -21,14 +21,10 @@ body: |
   }
 
 advanced:
+  realtime_port: 8088
   enable_breaker: false
   enable_retry: true
-  max_retry: 3
+  max_retries: 3
   ramp_up: 10s
 
-realtime:
-  enabled: true
-  port: 8088
-
-storage:
-  mode: memory
+storage: memory

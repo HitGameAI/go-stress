@@ -62,6 +62,13 @@ type Config struct {
 	// 验证配置
 	Verify *VerifyConfig `json:"verify,omitempty" yaml:"verify,omitempty"`
 
+	// Storage 存储模式：memory | sqlite | badger，留空取 memory
+	//
+	// 此前存储模式只能由 -storage 指定，配置文件里无从表达，于是「用一份 yaml
+	// 固定一整套压测参数」做不到，示例配置里那个 storage 段一直是写了也不生效的
+	// 命令行显式给出 -storage 时覆盖此项
+	Storage StorageMode `json:"storage,omitempty" yaml:"storage,omitempty"`
+
 	// 运行模式标识（用于报告展示）
 	RunMode RunMode `json:"run_mode,omitempty" yaml:"run_mode,omitempty"`
 
@@ -127,14 +134,28 @@ type TransformConfig struct {
 }
 
 // HTTPConfig HTTP协议配置
-// DefaultMaxConnsPerHost 每个 host 的默认最大连接数
-const DefaultMaxConnsPerHost = 100
+const (
+	// DefaultMaxConnsPerHost 每个 host 的默认最大连接数
+	DefaultMaxConnsPerHost = 100
+	// DefaultIdleConnTimeout 空闲连接的默认存活时间
+	DefaultIdleConnTimeout = 60 * time.Second
+)
 
 type HTTPConfig struct {
 	HTTP2           bool `json:"http2" yaml:"http2"`                           // 是否使用HTTP/2
 	KeepAlive       bool `json:"keepalive" yaml:"keepalive"`                   // 是否保持连接
 	FollowRedirects bool `json:"follow_redirects" yaml:"follow_redirects"`     // 是否跟随重定向
 	MaxConnsPerHost int  `json:"max_conns_per_host" yaml:"max_conns_per_host"` // 每个host的最大连接数
+
+	// MaxIdleConns 每个 host 保留的空闲连接数，留空取 MaxConnsPerHost
+	//
+	// 必须与并发上限同量级：标准库默认每 host 只留 2 条，压测时连接刚归还就被
+	// 关掉，长连接等于白设。单独开出此项是为了能在「复用连接」与「限制常驻
+	// 连接数」之间自行取舍
+	MaxIdleConns int `json:"max_idle_conns,omitempty" yaml:"max_idle_conns,omitempty"`
+
+	// IdleConnTimeout 空闲连接的存活时间，留空取 DefaultIdleConnTimeout
+	IdleConnTimeout time.Duration `json:"idle_conn_timeout,omitempty" yaml:"idle_conn_timeout,omitempty"`
 }
 
 // GRPCConfig gRPC协议配置
@@ -174,6 +195,12 @@ type AdvancedConfig struct {
 
 	RampUp       time.Duration `json:"ramp_up" yaml:"ramp_up"`             // 渐进式启动时间
 	RealtimePort int           `json:"realtime_port" yaml:"realtime_port"` // 实时报告服务器端口（默认8088）
+
+	// DisableRealtime 关闭实时报告服务器
+	//
+	// 取反向命名使省略即为启用，保持原有行为。此前该服务器总是启动且无从关闭，
+	// 示例配置里的 realtime.enabled 写了也不生效；CI 与批量跑场景并不需要它占端口
+	DisableRealtime bool `json:"disable_realtime,omitempty" yaml:"disable_realtime,omitempty"`
 
 	// TargetQPS 目标速率（每秒请求数），0 表示不限速按全速发压
 	//

@@ -27,12 +27,17 @@ import (
 
 // ProgressTracker 进度跟踪器
 type ProgressTracker struct {
-	total         uint64
-	completed     uint64
-	startTime     time.Time
-	collector     *statistics.Collector
-	workerCount   uint64
-	headerPrinted bool // 标记是否已打印表头
+	total       uint64
+	completed   uint64
+	startTime   time.Time
+	collector   *statistics.Collector
+	workerCount uint64
+	// headerPrinted 标记是否已打印表头
+	//
+	// 必须是原子类型：它由进度协程在 printProgress 中写入，而 Complete 在
+	// 主协程读取，两者并发。原先是裸 bool，-race 下可复现数据竞争 ——
+	// 此前没被发现是因为测试都在亚秒级结束，1 秒一次的进度 ticker 从未触发过
+	headerPrinted atomic.Bool
 	logger        logger.ILogger
 }
 
@@ -67,7 +72,10 @@ func (pt *ProgressTracker) Increment() uint64 {
 func (pt *ProgressTracker) GetProgress() (completed, total uint64, percentage float64) {
 	completed = atomic.LoadUint64(&pt.completed)
 	total = pt.total
-	percentage = float64(completed) / float64(total) * 100
+	// 按时长压测时总数未知（total 为 0），除法会得到 NaN/Inf 并污染报告
+	if total > 0 {
+		percentage = float64(completed) / float64(total) * 100
+	}
 	return
 }
 
@@ -109,12 +117,12 @@ func (pt *ProgressTracker) printProgress(elapsed time.Duration) {
 	statusStr := mathx.IfEmpty(buildStatusStr(statusCodes), "-")
 
 	// 第一次显示时打印表头
-	if !pt.headerPrinted {
+	if !pt.headerPrinted.Load() {
 		pt.logger.Info("")
 		pt.logger.Info("┌──────┬────────┬────────┬────────┬──────┬──────────┬──────────┬──────────┬──────────┬─────────┬────────┐")
 		pt.logger.Info("│ 耗时 │ 并发数 │ 成功数 │ 失败数 │ QPS  │ 最长耗时 │ 最短耗时 │ 平均耗时 │ 下载字节 │ 字节/秒 │ 状态码 │")
 		pt.logger.Info("├──────┼────────┼────────┼────────┼──────┼──────────┼──────────┼──────────┼──────────┼─────────┼────────┤")
-		pt.headerPrinted = true
+		pt.headerPrinted.Store(true)
 	}
 
 	// 格式化每个字段
@@ -171,7 +179,7 @@ func (pt *ProgressTracker) printSimpleProgress(elapsed time.Duration) {
 // Complete 完成并打印底部边框
 func (pt *ProgressTracker) Complete() {
 	// 如果显示过表头，打印表格底部
-	if pt.headerPrinted {
+	if pt.headerPrinted.Load() {
 		pt.logger.Info("└──────┴────────┴────────┴────────┴──────┴──────────┴──────────┴──────────┴──────────┴─────────┴────────┘")
 	}
 	pt.logger.Info("🎉 压测完成！")

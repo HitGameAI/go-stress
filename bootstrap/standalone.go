@@ -27,6 +27,7 @@ type StandaloneOptions struct {
 	Concurrency  uint64
 	Requests     uint64
 	Timeout      time.Duration
+	Duration     time.Duration // 压测持续时间
 	StorageMode  StorageMode
 	ReportPrefix string
 	MaxMemory    string
@@ -49,6 +50,7 @@ func RunStandalone(opts StandaloneOptions) error {
 		Concurrency:   opts.Concurrency,
 		Requests:      opts.Requests,
 		Timeout:       opts.Timeout,
+		Duration:      opts.Duration,
 		StorageMode:   executor.StorageMode(opts.StorageMode),
 		ReportPrefix:  opts.ReportPrefix,
 		MaxMemory:     opts.MaxMemory,

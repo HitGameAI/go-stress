@@ -30,7 +30,7 @@ Slave 1  Slave 2  Slave 3
 ### 1. 启动 Master 节点
 
 ```bash
-./go-stress -mode master \
+go-stress -mode master \
   -config config.yaml \
   -grpc-port 9090 \
   -http-port 8080
@@ -48,21 +48,21 @@ Slave 1  Slave 2  Slave 3
 
 ```bash
 # 机器 1
-./go-stress -mode slave \
+go-stress -mode slave \
   -master 192.168.1.100:9090 \
   -region beijing \
   -slave-id slave-bj-01 \
   -realtime-port 8088
 
 # 机器 2
-./go-stress -mode slave \
+go-stress -mode slave \
   -master 192.168.1.100:9090 \
   -region shanghai \
   -slave-id slave-sh-01 \
   -realtime-port 8089
 
 # 机器 3
-./go-stress -mode slave \
+go-stress -mode slave \
   -master 192.168.1.100:9090 \
   -region guangzhou \
   -slave-id slave-gz-01 \
@@ -111,7 +111,7 @@ http://master-ip:8080
 
 #### 1. 全部节点（默认）
 
-使用所有可用的 Slave 节点。
+使用所有可用的 Slave 节点
 
 ```bash
 curl -X POST http://master:8080/api/v1/tasks/{task_id}/start
@@ -121,7 +121,7 @@ Web 界面：选择"使用所有可用 Slave" → 点击"启动任务"
 
 #### 2. 指定节点
 
-手动选择特定的 Slave 节点。
+手动选择特定的 Slave 节点
 
 ```bash
 curl -X POST http://master:8080/api/v1/tasks/{task_id}/start \
@@ -133,7 +133,7 @@ Web 界面：选择"指定 Slave 节点" → 勾选 Slave → 点击"启动任�
 
 #### 3. 按区域选择
 
-使用指定区域的所有 Slave 节点。
+使用指定区域的所有 Slave 节点
 
 ```bash
 curl -X POST http://master:8080/api/v1/tasks/{task_id}/start \
@@ -335,11 +335,11 @@ curl "http://master:8080/api/details?slave_id=slave-1&status=all&offset=0&limit=
 
 ## 自动化测试脚本
 
-为了方便快速搭建本地分布式测试环境，提供了 PowerShell 自动化脚本。
+为了方便快速搭建本地分布式测试环境，提供了 PowerShell 自动化脚本
 
 ### test-distributed.ps1
 
-自动启动 1 个 Master + N 个 Slave 节点（默认 3 个）。
+自动启动 1 个 Master + N 个 Slave 节点（默认 3 个）
 
 ```powershell
 # 一键启动分布式环境
@@ -370,7 +370,7 @@ $ZONES = @("zone-a", "zone-b", "zone-c", "zone-d", "zone-e")  # 区域列表
 
 ### test-websocket.ps1
 
-自动启动 WebSocket 测试服务器并运行压测。
+自动启动 WebSocket 测试服务器并运行压测
 
 ```powershell
 # WebSocket 压测一键测试
@@ -395,11 +395,11 @@ $ZONES = @("zone-a", "zone-b", "zone-c", "zone-d", "zone-e")  # 区域列表
 1. 启动分布式集群：
 ```bash
 # 启动 Master
-./go-stress -mode master -grpc-port 9090 -http-port 8080
+go-stress -mode master -grpc-port 9090 -http-port 8080
 
 # 启动多个 Slave
-./go-stress -mode slave -master localhost:9090 -slave-id slave-1 -region zone-a
-./go-stress -mode slave -master localhost:9090 -slave-id slave-2 -region zone-b
+go-stress -mode slave -master localhost:9090 -slave-id slave-1 -region zone-a
+go-stress -mode slave -master localhost:9090 -slave-id slave-2 -region zone-b
 ```
 
 2. 访问管理界面：`http://localhost:8080`
@@ -426,16 +426,16 @@ $ZONES = @("zone-a", "zone-b", "zone-c", "zone-d", "zone-e")  # 区域列表
 
 ```bash
 # Master（中心机房）
-./go-stress -mode master -grpc-port 9090 -http-port 8080
+go-stress -mode master -grpc-port 9090 -http-port 8080
 
 # Slave（美国）
-./go-stress -mode slave -master master:9090 -region us-west -slave-id us-slave-1
+go-stress -mode slave -master master:9090 -region us-west -slave-id us-slave-1
 
 # Slave（欧洲）
-./go-stress -mode slave -master master:9090 -region eu-west -slave-id eu-slave-1
+go-stress -mode slave -master master:9090 -region eu-west -slave-id eu-slave-1
 
 # Slave（亚洲）
-./go-stress -mode slave -master master:9090 -region ap-east -slave-id ap-slave-1
+go-stress -mode slave -master master:9090 -region ap-east -slave-id ap-slave-1
 ```
 
 **创建任务**：
@@ -460,7 +460,7 @@ curl -X POST http://master:8080/api/v1/tasks/{task_id}/start \
 
 ```bash
 # Master
-./go-stress -mode master -grpc-port 9090 -http-port 8080
+go-stress -mode master -grpc-port 9090 -http-port 8080
 
 # 10 个 Slave
 for i in {1..10}; do
@@ -515,7 +515,7 @@ telnet master-ip 9090
 sudo firewall-cmd --list-ports
 
 # 检查 Master 日志
-./go-stress -mode master -grpc-port 9090 -log-level debug
+go-stress -mode master -grpc-port 9090 -log-level debug
 ```
 
 ### 任务无法启动
@@ -542,12 +542,12 @@ sudo firewall-cmd --list-ports
 
 **Master 日志**：
 ```bash
-./go-stress -mode master -grpc-port 9090 -log-level debug
+go-stress -mode master -grpc-port 9090 -log-level debug
 ```
 
 **Slave 日志**：
 ```bash
-./go-stress -mode slave -master master:9090 -log-level debug
+go-stress -mode slave -master master:9090 -log-level debug
 ```
 
 ## 相关文档

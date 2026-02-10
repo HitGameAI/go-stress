@@ -367,4 +367,4 @@ storage:
 
 - [分布式模式配置](./DISTRIBUTED_MODE.md)
 - [存储架构设计](./STORAGE_REPORT.md)
-- [性能优化指南](./PERFORMANCE_TUNING.md)
+- [负载形态](./LOAD_PROFILE.md)

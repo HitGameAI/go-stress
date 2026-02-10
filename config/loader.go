@@ -11,8 +11,11 @@
 package config
 
 import (
+	"bytes"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 
@@ -66,13 +69,22 @@ func (l *Loader) LoadFromBytes(data []byte, format string) (*Config, error) {
 	config := DefaultConfig()
 
 	// 解析配置（支持 yaml/yml/json 格式）
+	//
+	// 两种格式都开启「拒绝未知字段」：此前未知键被静默丢弃，于是把 max_retries
+	// 写成 max_retry、或照着过时文档写一个根本不存在的 storage 段，配置都会
+	// 悄无声息地不生效。压测跑完了才发现用的不是自己以为的那套参数，
+	// 结果已经白跑一轮——宁可启动时就报错
 	switch format {
 	case "yaml", "yml":
-		if err := yaml.Unmarshal(data, config); err != nil {
+		dec := yaml.NewDecoder(bytes.NewReader(data))
+		dec.KnownFields(true)
+		if err := dec.Decode(config); err != nil && !errors.Is(err, io.EOF) {
 			return nil, fmt.Errorf("解析YAML配置失败: %w", err)
 		}
 	case "json":
-		if err := json.Unmarshal(data, config); err != nil {
+		dec := json.NewDecoder(bytes.NewReader(data))
+		dec.DisallowUnknownFields()
+		if err := dec.Decode(config); err != nil && !errors.Is(err, io.EOF) {
 			return nil, fmt.Errorf("解析JSON配置失败: %w", err)
 		}
 	default:
@@ -84,6 +96,15 @@ func (l *Loader) LoadFromBytes(data []byte, format string) (*Config, error) {
 
 // processConfig 处理配置（变量解析、API合并、验证）
 func (l *Loader) processConfig(config *Config) (*Config, error) {
+	// duration 优先于 requests，与 Config.Duration 的字段语义一致
+	//
+	// DefaultConfig 会给 Requests 一个非零默认值，而 YAML 里只写 duration 时
+	// 该默认值仍在，于是「按时长压测」会退化成「按默认请求数压测」——
+	// 配置文件写 duration: 30s，实际只发了每并发一个请求
+	if config.Duration > 0 {
+		config.Requests = 0
+	}
+
 	// 设置变量解析器
 	l.varResolver.SetVariables(config.Variables)
 	config.VarResolver = l.varResolver

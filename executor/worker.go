@@ -158,7 +158,11 @@ func (w *Worker) Run(ctx context.Context) error {
 	}
 
 	// 执行请求
-	for i := uint64(0); i < w.reqCount; i++ {
+	//
+	// reqCount 为 0 表示按时长压测（config.duration），此时不设请求上限，
+	// 由 ctx 的截止时间决定何时停止
+	byDuration := w.reqCount == 0
+	for i := uint64(0); byDuration || i < w.reqCount; i++ {
 		select {
 		case <-ctx.Done():
 			return ctx.Err()

@@ -183,7 +183,7 @@ apis:
       
       # 21. JSON_SCHEMA - 验证响应结构
       - type: JSON_SCHEMA
-        schema: |
+        expect: |
           {
             "type": "object",
             "required": ["success", "message", "data"],
@@ -257,7 +257,6 @@ apis:
     path: /api/login
     method: POST
     body: '{"username":"","password":"test123"}'
-    skip_default_verify: true
     
     verify:
       # 29. STATUS_CODE - 400错误
@@ -277,7 +276,6 @@ apis:
   - name: unauthorized_access
     path: /api/user/info
     method: GET
-    skip_default_verify: true
     
     verify:
       # 32. STATUS_CODE - 401未授权
@@ -295,5 +293,3 @@ http:
 
 advanced:
   realtime_port: 8090
-  enable_html_report: true
-  save_details: true

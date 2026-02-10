@@ -58,6 +58,17 @@ func buildHTTPClient(cfg *config.HTTPConfig) *http.Client {
 		maxConns = config.DefaultMaxConnsPerHost
 	}
 
+	// 空闲连接数默认跟随连接上限，详见 HTTPConfig.MaxIdleConns 的说明
+	maxIdle := cfg.MaxIdleConns
+	if maxIdle <= 0 {
+		maxIdle = maxConns
+	}
+
+	idleTimeout := cfg.IdleConnTimeout
+	if idleTimeout <= 0 {
+		idleTimeout = config.DefaultIdleConnTimeout
+	}
+
 	transport := &http.Transport{
 		Proxy: http.ProxyFromEnvironment,
 		DialContext: (&net.Dialer{
@@ -67,9 +78,9 @@ func buildHTTPClient(cfg *config.HTTPConfig) *http.Client {
 		MaxConnsPerHost: maxConns,
 		// 空闲连接池必须与并发上限同量级：标准库默认每 host 只留 2 条空闲连接，
 		// 压测时绝大多数连接刚归还就被关掉，退化成频繁重建
-		MaxIdleConnsPerHost:   maxConns,
+		MaxIdleConnsPerHost:   maxIdle,
 		MaxIdleConns:          0, // 0 表示不限总数，由每 host 的上限约束
-		IdleConnTimeout:       60 * time.Second,
+		IdleConnTimeout:       idleTimeout,
 		TLSHandshakeTimeout:   10 * time.Second,
 		ExpectContinueTimeout: time.Second,
 		DisableKeepAlives:     !cfg.KeepAlive,

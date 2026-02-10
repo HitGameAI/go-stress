@@ -12,9 +12,7 @@ body: |
   Hello from go-stress {{seq}} at {{timestamp}}
 
 advanced:
+  realtime_port: 8088
   enable_breaker: false
   ramp_up: 3s
 
-realtime:
-  enabled: true
-  port: 8088

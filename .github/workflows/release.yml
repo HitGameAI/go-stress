@@ -40,7 +40,9 @@ jobs:
     runs-on: ubuntu-latest
     env:
       UPX_VERSION: ${{ github.event.inputs.upx-version || '5.1.0' }}
-      GO_VERSION: ${{ github.event.inputs.go-version || '1.21' }}
+      # 默认值须不低于 go.mod 的 go 指令：原先是 1.21，于是 17 个矩阵任务
+      # 各自先下载一遍 1.26 工具链才能构建，GOTOOLCHAIN=local 下则直接失败
+      GO_VERSION: ${{ github.event.inputs.go-version || '1.26' }}
       GOPROXY: ${{ github.event.inputs.goproxy || 'https://proxy.golang.org,direct' }}
       GOPRIVATE: ${{ github.event.inputs.goprivate || '' }}
     strategy:

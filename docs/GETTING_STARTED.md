@@ -13,7 +13,7 @@ go build -o go-stress
 ### HTTP GET 请求
 
 ```bash
-./go-stress -url https://httpbin.org/get -c 10 -n 100
+go-stress -url https://httpbin.org/get -c 10 -n 100
 ```
 
 - `-url`: 目标 URL
@@ -23,7 +23,7 @@ go build -o go-stress
 ### POST 请求
 
 ```bash
-./go-stress \
+go-stress \
   -url https://httpbin.org/post \
   -method POST \
   -H "Content-Type: application/json" \
@@ -44,7 +44,7 @@ curl 'https://api.example.com/users' \
 ```
 
 ```bash
-./go-stress -curl request.curl -c 100 -n 1000
+go-stress -curl request.curl -c 100 -n 1000
 ```
 
 ## ⚙️ 配置文件
@@ -64,7 +64,7 @@ body: '{"username":"test"}'
 ```
 
 ```bash
-./go-stress -config config.yaml
+go-stress -config config.yaml
 ```
 
 更多配置选项请参考：[配置文件详解](CONFIG_FILE.md)
@@ -85,7 +85,7 @@ cd testserver
 go run test_server.go
 
 # 执行压测（另一个终端）
-./go-stress -config testserver/ticket-and-send.yaml -storage sqlite
+go-stress -config testserver/ticket-and-send.yaml -storage sqlite
 ```
 
 **核心特性**：
@@ -105,10 +105,10 @@ go run test_server.go
 
 **文件**：`testserver/test-detail.yaml`
 
-覆盖全部 18 种验证器类型的完整测试流程。
+覆盖全部 18 种验证器类型的完整测试流程
 
 ```bash
-./go-stress -config testserver/test-detail.yaml
+go-stress -config testserver/test-detail.yaml
 ```
 
 **验证器覆盖**：
@@ -132,10 +132,10 @@ go run test_server.go
 **文件**：`testserver/example.curl.txt`
 
 ```bash
-./go-stress -curl testserver/example.curl.txt -c 100 -n 1000
+go-stress -curl testserver/example.curl.txt -c 100 -n 1000
 ```
 
-自动解析 curl 命令的所有参数（URL、Headers、Body）。
+自动解析 curl 命令的所有参数（URL、Headers、Body）
 
 ### 自定义测试
 
@@ -149,7 +149,7 @@ cp testserver/ticket-and-send.yaml my-test.yaml
 vim my-test.yaml
 
 # 执行压测
-./go-stress -config my-test.yaml -storage sqlite -max-memory 2GB
+go-stress -config my-test.yaml -storage sqlite -max-memory 2GB
 ```
 
 ## 📝 下一步

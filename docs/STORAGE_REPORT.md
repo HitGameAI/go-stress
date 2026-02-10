@@ -2,23 +2,25 @@
 
 ## 存储模式
 
-支持两种存储模式：
+支持三种存储模式，详细取舍见 [存储适配器](STORAGE_ADAPTERS.md)：
 
-| 特性 | Memory 模式 | SQLite 模式 |
-|:-----|:-----------|:-----------|
-| **速度** | 极快（纯内存） | 快（异步批量写入） |
-| **内存占用** | 随请求数增长 | 固定（~10MB） |
-| **持久化** | ❌ 不持久化 | ✅ 持久化到文件 |
-| **适用场景** | 短时快速测试 | 长时大量请求 |
+| 特性 | Memory | SQLite | BadgerDB |
+|:-----|:-------|:-------|:---------|
+| **速度** | 极快（纯内存） | 快（异步批量写入） | 很快（LSM-Tree） |
+| **内存占用** | 随请求数增长 | 固定 | 固定 |
+| **持久化** | ❌ | ✅ | ✅ |
+| **查询方式** | 进程内 | SQL | 键前缀扫描 |
+| **是否需要 cgo** | 否 | **是** | 否 |
+| **适用场景** | 短时快速测试 | 需要事后 SQL 分析 | 高写入量、无 cgo 环境 |
 
 ### Memory 模式（默认）
 
 ```bash
 # 默认使用内存模式
-./go-stress -url https://api.example.com -c 100 -n 10000
+go-stress -url https://api.example.com -c 100 -n 10000
 
 # 显式指定
-./go-stress -config config.yaml -storage memory
+go-stress -config config.yaml -storage memory
 ```
 
 **特点**：
@@ -29,7 +31,7 @@
 ### SQLite 模式
 
 ```bash
-./go-stress -config config.yaml -storage sqlite
+go-stress -config config.yaml -storage sqlite
 ```
 
 **特点**：

@@ -22,16 +22,13 @@ body: |
 
 # 高级配置
 advanced:
+  realtime_port: 8088
   enable_breaker: false
   enable_retry: true
-  max_retry: 2
+  max_retries: 2
   ramp_up: 5s
 
 # 实时监控
-realtime:
-  enabled: true
-  port: 8088
-
 # 存储配置
-storage:
-  mode: memory
+
+storage: memory

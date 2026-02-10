@@ -71,8 +71,14 @@ func NewExecutor(cfg *config.Config, storageMode StorageMode, storagePath string
 
 	strg, err := factory.CreateStorage(storageConfig)
 	if err != nil {
-		e.logger.Errorf("❌ 创建存储失败: %v，降级为内存模式", err)
-		strg = storage.NewMemoryStorage("local", e.logger)
+		// 不静默降级为内存模式
+		//
+		// 存储模式是使用者显式选的，选 sqlite/badger 就是为了事后能查明细。
+		// 原先失败即降级并继续，于是「要了持久化、拿到一次成功的压测、
+		// 数据一条没落盘」，退出码还是 0。典型触发场景是 CGO_ENABLED=0 构建的
+		// 二进制用 -storage sqlite：go-sqlite3 退化为 stub，建表必然失败
+		return nil, fmt.Errorf("创建 %s 存储失败: %w（需要内存模式请显式指定 -storage memory；"+
+			"sqlite 依赖 cgo，若二进制以 CGO_ENABLED=0 构建请改用 badger）", storageMode, err)
 	}
 
 	// 创建 Collector
@@ -226,22 +232,16 @@ func (e *Executor) Run(ctx context.Context) (*statistics.Report, error) {
 	e.printStartInfo()
 
 	// 启动实时报告服务器
-	port := 8088 // 默认端口
-	if e.config.Advanced != nil && e.config.Advanced.RealtimePort > 0 {
-		port = e.config.Advanced.RealtimePort
-	}
-	e.realtimeServer = statistics.NewRealtimeServer(e.collector, port, e.logger)
-	if err := e.realtimeServer.Start(); err != nil {
-		e.logger.Warnf("⚠️  启动实时报告服务器失败: %v", err)
-		// 启动失败时，清空realtimeServer 引用，避免后续误操作
-		e.realtimeServer = nil
-	} else {
-		// 将RealtimeServer设置为控制器
-		e.scheduler.controller = e.realtimeServer
-		// 自动打开浏览器
-		realtimeURL := fmt.Sprintf("http://localhost:%d", port)
-		e.logger.Info("🌐 实时监控地址: %s", realtimeURL)
-		go e.openBrowser(realtimeURL)
+	e.startRealtimeServer()
+
+	// 按时长压测：到点即取消 ctx，Worker 据此停止
+	//
+	// duration 字段此前只有校验与分布式协议读过，独立模式的执行器从不理它 ——
+	// 配置文件里写 duration: 3s 会被完全忽略，跑的是默认的「每并发 1 个请求」
+	if e.config.Duration > 0 {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, e.config.Duration)
+		defer cancel()
 	}
 
 	startTime := time.Now()
@@ -263,9 +263,19 @@ func (e *Executor) Run(ctx context.Context) (*statistics.Report, error) {
 	builder := statistics.NewReportBuilder(e.collector)
 	report := builder.BuildSummary(totalDuration)
 
+	// 按时长压测到点结束：这是正常完成而非失败
+	//
+	// Worker 在 ctx 结束时返回 ctx.Err()，于是按时长跑完必然得到
+	// DeadlineExceeded。此前它落进「其他错误」分支，使一次正常的定时压测
+	// 以 FATAL 收场，报告也不生成
+	if err != nil && e.config.Duration > 0 && errors.Is(err, context.DeadlineExceeded) {
+		e.logger.Infof("⏱️  已达到设定时长 %s，压测结束", e.config.Duration)
+		err = nil
+	}
+
 	// 检查是否因为context取消而中断
 	if err != nil {
-		// 如果是用户主动取消，不关闭实时服务器，返回当前报告
+		// 用户主动取消：不关闭实时服务器，返回当前报告
 		if errors.Is(err, context.Canceled) {
 			e.logger.Warn("⚠️  压测已被用户中断")
 			e.logger.Info("📊 正在保存当前统计数据...")
@@ -279,7 +289,11 @@ func (e *Executor) Run(ctx context.Context) (*statistics.Report, error) {
 	}
 
 	e.logger.Info("✅ 压测完成!")
-	e.logger.Info("📊 实时报告服务器继续运行，按 Ctrl+C 可停止并退出")
+	// 只在服务器真的在跑时才这么说：它可能被 advanced.disable_realtime 关掉
+	// 或启动失败，而无条件宣称「继续运行」会与前一行的关闭日志自相矛盾
+	if e.realtimeServer != nil {
+		e.logger.Info("📊 实时报告服务器继续运行，按 Ctrl+C 可停止并退出")
+	}
 	return report, nil
 }
 
@@ -330,6 +344,38 @@ func (e *Executor) SetStatsReporter(reporter StatsReporter) {
 // IsDistributed 是否为分布式模式
 func (e *Executor) IsDistributed() bool {
 	return e.isDistributed
+}
+
+// startRealtimeServer 启动实时报告服务器
+//
+// advanced.disable_realtime 为真时整段跳过：CI 与批量跑并不需要它占端口，
+// 而此前它总是启动且无从关闭，示例配置里的 realtime.enabled 写了也不生效
+func (e *Executor) startRealtimeServer() {
+	if e.config.Advanced != nil && e.config.Advanced.DisableRealtime {
+		e.logger.Debug("实时报告服务器已按配置关闭")
+		return
+	}
+
+	port := 8088 // 默认端口
+	if e.config.Advanced != nil && e.config.Advanced.RealtimePort > 0 {
+		port = e.config.Advanced.RealtimePort
+	}
+
+	server := statistics.NewRealtimeServer(e.collector, port, e.logger)
+	if err := server.Start(); err != nil {
+		e.logger.Warnf("⚠️  启动实时报告服务器失败: %v", err)
+		// 启动失败时不保留引用，避免后续误操作
+		e.realtimeServer = nil
+		return
+	}
+
+	e.realtimeServer = server
+	// 将 RealtimeServer 设置为控制器
+	e.scheduler.controller = server
+
+	realtimeURL := fmt.Sprintf("http://localhost:%d", port)
+	e.logger.Info("🌐 实时监控地址: %s", realtimeURL)
+	go e.openBrowser(realtimeURL)
 }
 
 // openBrowser 在默认浏览器中打开URL

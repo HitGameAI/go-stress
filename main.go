@@ -14,6 +14,7 @@ import (
 	"flag"
 	"fmt"
 	"os"
+	"runtime/debug"
 	"time"
 
 	"github.com/kamalyes/go-stress/bootstrap"
@@ -90,6 +91,8 @@ var (
 
 	// 定速压测
 	targetQPS float64 // 目标速率（每秒请求数），0 表示不限速
+
+	duration time.Duration // 压测持续时间，给出后优先于 -n
 
 	// 内存限制
 	maxMemory string // 内存使用阈值
@@ -180,6 +183,7 @@ func init() {
 
 	// 定速压测
 	flag.Float64Var(&targetQPS, "qps", 0, "目标速率（每秒请求数），0 表示全速发压；定速用于测「给定到达率下延迟如何」")
+	flag.DurationVar(&duration, "duration", 0, "压测持续时间（如 30s / 5m），给出后优先于 -n")
 
 	// 分布式参数
 	flag.Var(&mode, "mode", "运行模式 (standalone/master/slave)")
@@ -280,6 +284,11 @@ func buildConfigFromFlags() *config.Config {
 	cfg.Method = method
 	cfg.Timeout = timeout
 	cfg.Body = body
+	// 按时长压测时清空请求数：两者并存时以时长为准，Worker 据 reqCount==0 判断
+	if duration > 0 {
+		cfg.Duration = duration
+		cfg.Requests = 0
+	}
 
 	// DefaultConfig 已给出 Advanced，此处只覆盖本函数负责的几项
 	if cfg.Advanced == nil {
@@ -370,6 +379,22 @@ func overrideRequests() uint64 {
 	return 0
 }
 
+// overrideStorage 返回用于覆盖文件配置的存储模式，未显式指定时返回空串
+func overrideStorage() types.StorageMode {
+	if flagExplicitlySet("storage") {
+		return storageMode
+	}
+	return ""
+}
+
+// overrideDuration 返回用于覆盖文件配置的压测时长，未显式指定时返回 0
+func overrideDuration() time.Duration {
+	if flagExplicitlySet("duration") {
+		return duration
+	}
+	return 0
+}
+
 // overrideTimeout 返回用于覆盖文件配置的超时，未显式指定时返回 0
 func overrideTimeout() time.Duration {
 	if flagExplicitlySet("timeout") {
@@ -447,8 +472,54 @@ func printBanner() {
 
 // printVersion 打印版本信息
 func printVersion() {
-	fmt.Println("go-stress version 1.0.0")
+	fmt.Printf("go-stress %s\n", buildVersion())
 	fmt.Println("高性能 HTTP/gRPC/WebSocket 压测工具")
+	fmt.Println("https://github.com/kamalyes/go-stress")
+}
+
+// version 可由 -ldflags "-X main.version=v1.2.3" 注入，留空则取构建信息
+var version string
+
+// buildVersion 返回当前二进制的版本描述
+//
+// 原先硬编码为 1.0.0，于是无论从哪个提交构建、用 go install 装的是哪个版本，
+// 报出来的都是同一个号 —— 对使用者排查「我装的到底是哪一版」毫无帮助
+//
+// 取值顺序：ldflags 注入 > 模块版本（go install 会填成 tag 或伪版本）> VCS 修订号
+func buildVersion() string {
+	if version != "" {
+		return version
+	}
+
+	info, ok := debug.ReadBuildInfo()
+	if !ok {
+		return "unknown"
+	}
+
+	v := info.Main.Version
+	// 本地 go build 得到的是 "(devel)"，此时补上 VCS 信息才有区分度
+	if v == "" || v == "(devel)" {
+		v = "devel"
+		var revision, modified string
+		for _, s := range info.Settings {
+			switch s.Key {
+			case "vcs.revision":
+				revision = s.Value
+			case "vcs.modified":
+				modified = s.Value
+			}
+		}
+		if revision != "" {
+			if len(revision) > 12 {
+				revision = revision[:12]
+			}
+			v += "+" + revision
+			if modified == "true" {
+				v += "-dirty"
+			}
+		}
+	}
+	return v
 }
 
 // printSimpleUsage 打印简化的使用说明
@@ -804,10 +875,12 @@ func runStandaloneMode() {
 		CurlFile:   curlFile,
 		// 这三项只在用户显式指定时才有值，用于覆盖文件/脚本里的同名配置；
 		// 传默认值会把脚本里的并发悄悄改掉，详见 flagExplicitlySet
-		Concurrency:  overrideConcurrency(),
-		Requests:     overrideRequests(),
-		Timeout:      overrideTimeout(),
-		StorageMode:  storageMode,
+		Concurrency: overrideConcurrency(),
+		Requests:    overrideRequests(),
+		Timeout:     overrideTimeout(),
+		Duration:    overrideDuration(),
+		// 只在显式 -storage 时覆盖配置文件里的 storage，理由同 -c / -n
+		StorageMode:  overrideStorage(),
 		ReportPrefix: reportPrefix,
 		MaxMemory:    maxMemory,
 		Logger:       logger.Default,

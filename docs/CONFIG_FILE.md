@@ -25,15 +25,50 @@ body: |
   }
 ```
 
+## 压测时长
+
+```yaml
+duration: 5m               # 持续时长，给出后优先于 requests
+```
+
+给出 `duration` 后 `requests` 会被置零，由时长决定何时停止 — 两者并存时以时长为准，这与字段语义一致
+
+> `run_mode` 是运行时写入的内部字段（用于报告展示 standalone / master / slave），不需要手工配置
+
+## 存储模式
+
+```yaml
+storage: sqlite              # memory（默认）| sqlite | badger
+```
+
+显式给出 `-storage` 时覆盖此项；各模式的取舍见 [存储适配器](STORAGE_ADAPTERS.md)
+
+> `sqlite` 依赖 cgo，以 `CGO_ENABLED=0` 构建的二进制请改用 `badger`（纯 Go）
+
 ## HTTP 配置
 
 ```yaml
 http:
-  http2: true                # 启用 HTTP/2
-  keepalive: true            # 启用 Keep-Alive
-  follow_redirects: true     # 跟随重定向
-  max_conns_per_host: 100    # 每个 host 的最大连接数
+  http2: true                # 启用 HTTP/2 协商
+  keepalive: true            # 使用长连接，默认 true
+  follow_redirects: true     # 跟随重定向，默认 true
+  max_conns_per_host: 100    # 每个 host 的最大连接数，默认 100
+  max_idle_conns: 100        # 每个 host 保留的空闲连接数，留空取 max_conns_per_host
+  idle_conn_timeout: 60s     # 空闲连接存活时间，留空取 60s
 ```
+
+| 字段 | 类型 | 默认 | 说明 |
+|:-----|:-----|:-----|:-----|
+| `http2` | bool | `false` | 启用 HTTP/2 协商 |
+| `keepalive` | bool | `true` | 关闭后每个请求各用一条新连接，用于测量建连开销 |
+| `follow_redirects` | bool | `true` | 关闭后原样返回 3xx，便于测量这一跳本身 |
+| `max_conns_per_host` | int | `100` | 每个 host 的连接上限 |
+| `max_idle_conns` | int | 同 `max_conns_per_host` | 空闲连接池大小 |
+| `idle_conn_timeout` | duration | `60s` | 空闲连接存活时间 |
+
+`max_idle_conns` 必须与并发上限同量级：标准库默认每 host 只留 2 条空闲连接，压测时连接刚归还就被关掉，长连接等于白设 — 故留空时自动跟随 `max_conns_per_host`
+
+单请求超时由顶层 `timeout` 控制，不在此处
 
 ## gRPC 配置
 
@@ -45,7 +80,40 @@ grpc:
   proto_file: user.proto     # proto 文件路径（不使用反射时）
   metadata:
     key: value
+
+  # TLS（可选）
+  tls:
+    enabled: true                 # 启用 TLS，默认 false
+    insecure_skip_verify: false   # 跳过证书校验，仅用于自签环境
+    ca_file: ca.pem               # CA 证书，校验服务端时使用
+    cert_file: client.pem         # 客户端证书，双向认证时使用
+    key_file: client.key          # 客户端私钥，与 cert_file 配对
 ```
+
+| 字段 | 类型 | 默认 | 说明 |
+|:-----|:-----|:-----|:-----|
+| `use_reflection` | bool | `false` | 通过服务端反射获取方法定义 |
+| `service` | string | - | 服务名，如 `pb.UserService` |
+| `method` | string | - | 方法名 |
+| `proto_file` | string | - | proto 文件路径，不使用反射时需要 |
+| `metadata` | map | - | 随请求发送的 gRPC metadata |
+| `tls.enabled` | bool | `false` | 启用 TLS |
+| `tls.insecure_skip_verify` | bool | `false` | 跳过证书校验 |
+| `tls.ca_file` | string | - | CA 证书路径，给出后用它校验服务端 |
+| `tls.cert_file` | string | - | 客户端证书路径 |
+| `tls.key_file` | string | - | 客户端私钥路径 |
+
+`cert_file` 与 `key_file` 需同时给出才会加载客户端证书
+
+## WebSocket 配置
+
+```yaml
+websocket:
+  ping_interval: 30s         # ping 间隔
+  ping_timeout: 10s          # ping 超时
+```
+
+WebSocket 的握手超时与读写截止时间取自顶层 `timeout`
 
 ## 高级配置
 
@@ -63,10 +131,59 @@ advanced:
   
   # 渐进启动
   ramp_up: 60s               # 渐进启动时间
-  
+
+  # 定速压测
+  target_qps: 500            # 目标速率（请求/秒），0 或省略表示全速
+
   # 实时报告
-  realtime_port: 8088        # 实时报告服务器端口
+  realtime_port: 8088        # 实时报告服务器端口，默认 8088
+  disable_realtime: false    # 关闭实时报告服务器，默认 false
+
+  # 链路追踪
+  disable_trace_header: false # 不注入 traceparent 请求头，默认 false
 ```
+
+| 字段 | 类型 | 默认 | 说明 |
+|:-----|:-----|:-----|:-----|
+| `enable_breaker` | bool | `false` | 启用熔断器 |
+| `max_failures` | int32 | `5` | 熔断器的最大失败次数 |
+| `reset_timeout` | duration | `30s` | 熔断器重置超时 |
+| `enable_retry` | bool | `false` | 启用失败重试 |
+| `max_retries` | int | `3` | 最大重试次数 |
+| `retry_interval` | duration | `1s` | 重试间隔 |
+| `ramp_up` | duration | `0` | 在该时长内把并发线性拉起 |
+| `target_qps` | float64 | `0` | 目标速率，见 [负载形态](LOAD_PROFILE.md) |
+| `realtime_port` | int | `8088` | 实时报告服务器端口 |
+| `disable_realtime` | bool | `false` | 关闭实时报告服务器，CI 场景不需要它占端口 |
+| `disable_trace_header` | bool | `false` | 不注入 `traceparent`，见 [链路追踪](TRACING.md) |
+
+> 字段名是 `max_retries` 不是 `max_retry` — 配置文件开启了未知字段检查，写错会在启动时直接报错
+
+## 思考时间
+
+```yaml
+think_time:
+  type: gaussian             # constant（默认）| uniform | gaussian
+  delay: 1s                  # 基础延迟
+  range: 500ms               # uniform 的随机区间上界
+  deviation: 300ms           # gaussian 的标准差
+```
+
+也可在单个 API 下声明以覆盖全局，完整说明见 [负载形态](LOAD_PROFILE.md)
+
+## CSV 数据源
+
+```yaml
+csv_data:
+  path: users.csv            # 相对路径按配置文件所在目录解析
+  variables: [user, pass]    # 留空则取首行表头
+  delimiter: ","             # 默认逗号
+  recycle: true              # 用尽后回到首行，默认 true
+  ignore_first_line: false   # 显式给了 variables 时是否仍跳过首行
+  sharing: all               # all（默认）| worker
+```
+
+列名即变量名，用 `{{.列名}}` 引用，完整说明见 [负载形态](LOAD_PROFILE.md)
 
 ## 验证配置
 
@@ -90,6 +207,21 @@ verify:
 操作符：
 
 - `eq`, `ne`, `gt`, `gte`, `lt`, `lte`, `contains`, `regex`
+
+### 验证配置的全部字段
+
+| 字段 | 类型 | 说明 |
+|:-----|:-----|:-----|
+| `type` | string | 验证类型，如 `STATUS_CODE` / `JSONPATH` / `CONTAINS` |
+| `jsonpath` | string | JSONPath 表达式，仅 `JSONPATH` 型使用 |
+| `operator` | string | 比较操作符：`eq` / `ne` / `gt` / `gte` / `lt` / `lte` / `contains` / `not_contains` / `regex` 等 |
+| `expect` | any | 期望值，所有类型共用此字段（`JSON_SCHEMA` 型在此给出 schema 对象） |
+| `regex` | bool | 以正则匹配，等价于 `operator: regex` |
+| `custom` | string | 自定义验证器名称，仅 `CUSTOM` 型使用 |
+| `description` | string | 验证描述，出现在报告中 |
+| `continue_on_failure` | bool | 验证失败时不阻断后续依赖的 API |
+
+单个 API 声明了自己的 `verify` 时，不再继承顶层的公共验证配置
 
 ## 多 API 配置
 
@@ -165,7 +297,7 @@ apis:
 
 ## 数据提取器
 
-支持从HTTP请求和响应中提取数据、应用转换，并存储为变量供后续使用。
+支持从HTTP请求和响应中提取数据、应用转换，并存储为变量供后续使用
 
 ### 基础提取
 

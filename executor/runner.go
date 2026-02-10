@@ -40,6 +40,7 @@ type RunOptions struct {
 	Concurrency uint64        // 并发数（可覆盖配置文件）
 	Requests    uint64        // 请求数（可覆盖配置文件）
 	Timeout     time.Duration // 超时时间（可覆盖配置文件）
+	Duration    time.Duration // 压测持续时间，非零时优先于 Requests
 
 	// === 存储配置 ===
 	StorageMode  StorageMode // 存储模式
@@ -88,6 +89,17 @@ func RunTask(opts RunOptions) *RunResult {
 	if err != nil {
 		result.Error = err
 		return result
+	}
+
+	// === 1.5 存储模式：配置文件可指定，命令行显式给出时优先 ===
+	//
+	// 命令行的 -storage 默认值是 memory，无法与「用户显式要求 memory」区分，
+	// 故由调用方只在显式指定时传值（与 -c / -n 同一套办法，见 applyOverrides）
+	if opts.StorageMode == "" {
+		opts.StorageMode = StorageMode(cfg.Storage)
+	}
+	if opts.StorageMode == "" {
+		opts.StorageMode = StorageModeMemory
 	}
 
 	// === 2. 验证配置 ===
@@ -175,6 +187,11 @@ func applyOverrides(cfg *config.Config, opts RunOptions) {
 	}
 	if opts.Timeout > 0 {
 		cfg.Timeout = opts.Timeout
+	}
+	// 按时长压测与按请求数压测互斥，显式给出时长即清空请求数
+	if opts.Duration > 0 {
+		cfg.Duration = opts.Duration
+		cfg.Requests = 0
 	}
 }
 
@@ -266,8 +283,9 @@ func validateConfig(cfg *config.Config) error {
 		return fmt.Errorf("并发数不能为0")
 	}
 
-	if cfg.Requests == 0 {
-		return fmt.Errorf("请求数不能为0")
+	// 按时长压测时请求数本就为 0，由 ctx 的截止时间决定何时停止
+	if cfg.Requests == 0 && cfg.Duration <= 0 {
+		return fmt.Errorf("请求数不能为0（按时长压测请给出 -duration 或配置 duration）")
 	}
 
 	// gRPC特定验证
@@ -426,13 +444,15 @@ func fileURL(path string) string {
 
 // waitForExit 等待退出
 func waitForExit(exec *Executor, sigCh chan os.Signal, ctx context.Context, log logger.ILogger) {
-	realtimePort := 8088
+	// 实时报告服务器可能被 advanced.disable_realtime 关掉，或启动失败。
+	// 此前无条件宣称「服务器仍在运行」并给出地址，关掉它时就会自相矛盾
 	if realtimeServer := exec.GetRealtimeServer(); realtimeServer != nil {
-		realtimePort = realtimeServer.GetPort()
+		log.Info("💡 提示: 实时报告服务器仍在运行")
+		log.Info("   访问 http://localhost:%d 查看实时报告", realtimeServer.GetPort())
+	} else {
+		log.Info("💡 提示: 实时报告服务器未启用，压测已结束")
+		log.Info("   需要立即退出请加 -no-wait")
 	}
-
-	log.Info("💡 提示: 实时报告服务器仍在运行")
-	log.Info("   访问 http://localhost:%d 查看实时报告", realtimePort)
 	log.Info("   按 Ctrl+C 退出程序")
 
 	select {

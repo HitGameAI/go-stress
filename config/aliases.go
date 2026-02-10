@@ -21,6 +21,7 @@ type (
 	ExtractorType  = types.ExtractorType
 	ExpectOperator = types.ExpectOperator
 	RunMode        = types.RunMode
+	StorageMode    = types.StorageMode
 )
 
 // 常量别名
@@ -31,6 +32,12 @@ const (
 	ProtocolWebSocket = types.ProtocolWebSocket
 
 	// 验证类型
+	StorageModeMemory = types.StorageModeMemory
+	StorageModeSQLite = types.StorageModeSQLite
+	StorageModeBadger = types.StorageModeBadger
+)
+
+const (
 	VerifyTypeStatusCode = types.VerifyTypeStatusCode
 	VerifyTypeJSONPath   = types.VerifyTypeJSONPath
 	VerifyTypeContains   = types.VerifyTypeContains
