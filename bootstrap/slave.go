@@ -98,7 +98,7 @@ func RunSlave(opts SlaveOptions) error {
 	signal.Notify(sigCh, os.Interrupt, syscall.SIGTERM)
 	go func() {
 		<-sigCh
-		opts.Logger.Warn("\n\n⚠️  收到中断信号，正在停止...")
+		opts.Logger.Warn("⚠️  收到中断信号，正在停止...")
 		cancel()
 		s.Stop()
 	}()

@@ -13,6 +13,8 @@ package statistics
 import (
 	"encoding/json"
 	"fmt"
+	"sort"
+	"strconv"
 	"time"
 
 	"github.com/kamalyes/go-logger"
@@ -75,83 +77,65 @@ type Report struct {
 func (r *Report) Print() {
 	r.logger.Info("📊 压测统计报告")
 
-	// 构建单个统一表格
-	reportData := []map[string]interface{}{
-		{
-			"分类":  "📈 基础统计",
-			"指标":  "总请求数",
-			"值":   fmt.Sprintf("%d", r.TotalRequests),
-			"分类2": "⏱️  响应时间",
-			"指标2": "最小耗时",
-			"值2":  r.MinLatency.String(),
-		},
-		{
-			"分类":  "📈 基础统计",
-			"指标":  "成功请求",
-			"值":   fmt.Sprintf("%d", r.SuccessRequests),
-			"分类2": "⏱️  响应时间",
-			"指标2": "最大耗时",
-			"值2":  r.MaxLatency.String(),
-		},
-		{
-			"分类":  "📈 基础统计",
-			"指标":  "失败请求",
-			"值":   fmt.Sprintf("%d", r.FailedRequests),
-			"分类2": "⏱️  响应时间",
-			"指标2": "平均耗时",
-			"值2":  r.AvgLatency.String(),
-		},
-		{
-			"分类":  "📈 基础统计",
-			"指标":  "成功率",
-			"值":   fmt.Sprintf("%.2f%%", r.SuccessRate),
-			"分类2": "⏱️  响应时间",
-			"指标2": "P50",
-			"值2":  r.P50Latency.String(),
-		},
-		{
-			"分类":  "⚡ 性能指标",
-			"指标":  "总耗时",
-			"值":   r.TotalTime.String(),
-			"分类2": "⏱️  响应时间",
-			"指标2": "P90",
-			"值2":  r.P90Latency.String(),
-		},
-		{
-			"分类":  "⚡ 性能指标",
-			"指标":  "QPS",
-			"值":   fmt.Sprintf("%.2f", r.QPS),
-			"分类2": "⏱️  响应时间",
-			"指标2": "P95",
-			"值2":  r.P95Latency.String(),
-		},
-		{
-			"分类":  "⚡ 性能指标",
-			"指标":  "传输数据",
-			"值":   units.BytesSize(float64(r.TotalSize)),
-			"分类2": "⏱️  响应时间",
-			"指标2": "P99",
-			"值2":  r.P99Latency.String(),
-		},
+	// 表格用 [][]string 而非 []map：ConsoleTable 从 map 切片取表头时是 range map，
+	// 列序每次运行都不同（曾出现"值2"排到首列）；[][]string 的首行即表头，列序确定
+	reportData := [][]string{
+		{"分类", "指标", "值", "分类", "指标", "值"},
+		{"📈 基础统计", "总请求数", fmt.Sprintf("%d", r.TotalRequests), "⏱️  响应时间", "最小耗时", r.MinLatency.String()},
+		{"📈 基础统计", "成功请求", fmt.Sprintf("%d", r.SuccessRequests), "⏱️  响应时间", "最大耗时", r.MaxLatency.String()},
+		{"📈 基础统计", "失败请求", fmt.Sprintf("%d", r.FailedRequests), "⏱️  响应时间", "平均耗时", r.AvgLatency.String()},
+		{"📈 基础统计", "成功率", fmt.Sprintf("%.2f%%", r.SuccessRate), "⏱️  响应时间", "P50", r.P50Latency.String()},
+		{"⚡ 性能指标", "总耗时", r.TotalTime.String(), "⏱️  响应时间", "P90", r.P90Latency.String()},
+		{"⚡ 性能指标", "QPS", fmt.Sprintf("%.2f", r.QPS), "⏱️  响应时间", "P95", r.P95Latency.String()},
+		{"⚡ 性能指标", "传输数据", units.BytesSize(float64(r.TotalSize)), "⏱️  响应时间", "P99", r.P99Latency.String()},
 	}
 
 	r.logger.ConsoleTable(reportData)
 
 	// 错误统计（如果有）
 	if len(r.Errors) > 0 {
-		errorStats := make([]map[string]interface{}, 0, len(r.Errors))
-		for errMsg, count := range r.Errors {
-			// 截断过长的错误信息
-			if len(errMsg) > 80 {
-				errMsg = errMsg[:77] + "..."
-			}
-			errorStats = append(errorStats, map[string]interface{}{
-				"错误信息": errMsg,
-				"次数":   count,
-			})
-		}
-		r.logger.ConsoleTable(errorStats)
+		r.logger.ConsoleTable(r.errorTable())
 	}
+}
+
+// errorTable 构建错误统计表格，按出现次数降序排列
+// 排序而非直接 range map：同一批结果重复打印时行序应当一致，且高频错误要排在最前
+func (r *Report) errorTable() [][]string {
+	type errorStat struct {
+		msg   string
+		count uint64
+	}
+
+	stats := make([]errorStat, 0, len(r.Errors))
+	for msg, count := range r.Errors {
+		stats = append(stats, errorStat{msg: msg, count: count})
+	}
+	sort.Slice(stats, func(i, j int) bool {
+		if stats[i].count != stats[j].count {
+			return stats[i].count > stats[j].count
+		}
+		return stats[i].msg < stats[j].msg // 次数相同时按消息排，保证完全确定
+	})
+
+	table := make([][]string, 0, len(stats)+1)
+	table = append(table, []string{"错误信息", "次数"})
+	for _, s := range stats {
+		table = append(table, []string{truncateRunes(s.msg, maxErrorMsgRunes), strconv.FormatUint(s.count, 10)})
+	}
+	return table
+}
+
+// maxErrorMsgRunes 错误信息在表格中保留的最大字符数
+const maxErrorMsgRunes = 80
+
+// truncateRunes 按字符（而非字节）截断字符串
+// 按字节截断会把多字节字符切成半个，中文错误信息会在表格里显示成乱码替换符
+func truncateRunes(s string, max int) string {
+	runes := []rune(s)
+	if len(runes) <= max {
+		return s
+	}
+	return string(runes[:max-3]) + "..."
 }
 
 // Summary 返回简短摘要

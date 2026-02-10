@@ -94,13 +94,13 @@ func (hc *HealthChecker) handleFailure(slave *common.SlaveInfo) {
 	if int(count) >= hc.maxFailures {
 		// 标记为不健康
 		if err := hc.pool.MarkUnhealthy(slave.ID); err != nil {
-			hc.logger.Error("Failed to mark slave as unhealthy",
+			hc.logger.ErrorKV("Failed to mark slave as unhealthy",
 				"slave_id", slave.ID,
 				"error", err)
 			return
 		}
 
-		hc.logger.Warn("Slave marked as unhealthy",
+		hc.logger.WarnKV("Slave marked as unhealthy",
 			"slave_id", slave.ID,
 			"hostname", slave.Hostname,
 			"failures", count)

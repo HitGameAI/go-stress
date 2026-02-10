@@ -19,6 +19,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/kamalyes/go-logger"
@@ -47,10 +48,13 @@ type DetailStorage struct {
 	cancel      context.CancelFunc
 
 	// 统计信息
-	writeCount    uint64 // 写入总数
-	flushCount    uint64 // 刷新次数
-	dropCount     uint64 // 丢弃数（通道满）
-	lastFlushTime time.Time
+	//
+	// 用原子类型而非裸 uint64：dropCount 在 Write 里自增，而 Write 由所有 worker
+	// 并发调用（通道打满时就会走到），裸自增是数据竞争；writeCount/flushCount 虽只由
+	// batchWriter 单协程写，但 GetStats 是对外方法，可被其他协程随时读
+	writeCount atomic.Uint64 // 写入总数
+	flushCount atomic.Uint64 // 刷新次数
+	dropCount  atomic.Uint64 // 丢弃数（通道满）
 }
 
 // NewDetailStorage 创建存储实例
@@ -132,17 +136,19 @@ func NewDetailStorage(dbPath, nodeID string, log logger.ILogger) (*DetailStorage
 		log.Infof("💾 SQLite 内存模式已启用 (节点: %s)", nodeID)
 	}
 
+	// ctx/cancel 必须初始化：batchWriter 的 EventLoop 仅在 ctx.Done() 时退出，
+	// 此处漏掉会让 s.ctx 为 nil，关闭分支永不触发，Close 的 wg.Wait() 永久阻塞
+	ctx, cancel := context.WithCancel(context.Background())
+
 	storage := &DetailStorage{
-		db:            db,
-		writeChan:     make(chan *RequestResult, 10000), // 1万缓冲
-		batchSize:     100,                              // 每100条批量写入
-		flushTicker:   time.NewTicker(1 * time.Second),  // 每秒强制刷新
-		nodeID:        nodeID,
-		logger:        log,
-		writeCount:    0,
-		flushCount:    0,
-		dropCount:     0,
-		lastFlushTime: time.Now(),
+		db:          db,
+		writeChan:   make(chan *RequestResult, 10000), // 1万缓冲
+		batchSize:   100,                              // 每100条批量写入
+		flushTicker: time.NewTicker(1 * time.Second),  // 每秒强制刷新
+		ctx:         ctx,
+		cancel:      cancel,
+		nodeID:      nodeID,
+		logger:      log,
 	}
 
 	// 启动异步写入协程
@@ -166,9 +172,9 @@ func (s *DetailStorage) Write(detail *RequestResult) {
 		// 写入成功
 	default:
 		// 通道满了，丢弃（避免阻塞主流程）
-		s.dropCount++
-		if s.dropCount%1000 == 1 { // 每1000次丢弃警告一次
-			s.logger.Warnf("⚠️  写入通道已满，已丢弃 %d 条记录", s.dropCount)
+		dropped := s.dropCount.Add(1)
+		if dropped%1000 == 1 { // 每1000次丢弃警告一次
+			s.logger.Warnf("⚠️  写入通道已满，已丢弃 %d 条记录", dropped)
 		}
 	}
 }
@@ -189,15 +195,14 @@ func (s *DetailStorage) batchWriter() {
 			// 写入失败，记录日志但不阻塞
 			s.logger.Errorf("❌ 批量写入 %d 条记录失败: %v", len(batch), err)
 		} else {
-			s.writeCount += uint64(len(batch))
-			s.flushCount++
-			s.lastFlushTime = time.Now()
+			written := s.writeCount.Add(uint64(len(batch)))
+			s.flushCount.Add(1)
 
 			// 每写入10000条记录输出一次统计
-			if s.writeCount%10000 == 0 {
+			if written%10000 == 0 {
 				duration := time.Since(start)
 				s.logger.Debugf("📊 已写入 %d 条记录 (本次: %d 条, 耗时: %v)",
-					s.writeCount, len(batch), duration)
+					written, len(batch), duration)
 			}
 		}
 
@@ -213,7 +218,23 @@ func (s *DetailStorage) batchWriter() {
 			}
 		}).
 		OnTicker(1*time.Second, flush). // 定时刷新
-		OnShutdown(flush).              // 关闭时最后一次刷新
+		// OnShutdown 先排空通道再落盘：事件循环退出时通道里可能还积着上万条
+		// 尚未取走的记录（writeChan 缓冲 10000），只 flush 内存里的 batch 会把
+		// 这一批结果连同最后的统计一起丢掉
+		OnShutdown(func() {
+			for {
+				select {
+				case detail := <-s.writeChan:
+					batch = append(batch, detail)
+					if len(batch) >= s.batchSize {
+						flush()
+					}
+				default:
+					flush()
+					return
+				}
+			}
+		}).
 		Run()
 }
 
@@ -403,8 +424,12 @@ func (s *DetailStorage) Close() error {
 	s.closed = true
 	s.mu.Unlock()
 
-	// 关闭写入通道，触发 batchWriter 刷新剩余数据
-	close(s.writeChan)
+	// 取消 ctx 让 batchWriter 的 EventLoop 退出（OnShutdown 负责排空并落盘）
+	//
+	// 这里不 close(writeChan)：EventLoop 基于 reflect.Select，已关闭的通道恒为
+	// ready，会让事件循环空转打满 CPU 而非退出；且 Write 是先查 closed、再松锁、
+	// 后投递，与 close 并发时会 panic: send on closed channel
+	s.cancel()
 
 	// 停止定时器
 	s.flushTicker.Stop()
@@ -414,10 +439,10 @@ func (s *DetailStorage) Close() error {
 
 	// 输出最终统计
 	s.logger.Infof("✅ SQLite 存储已关闭")
-	s.logger.Infof("   📝 总写入: %d 条", s.writeCount)
-	s.logger.Infof("   🔄 刷新次数: %d 次", s.flushCount)
-	if s.dropCount > 0 {
-		s.logger.Warnf("   ⚠️  丢弃记录: %d 条", s.dropCount)
+	s.logger.Infof("   📝 总写入: %d 条", s.writeCount.Load())
+	s.logger.Infof("   🔄 刷新次数: %d 次", s.flushCount.Load())
+	if dropped := s.dropCount.Load(); dropped > 0 {
+		s.logger.Warnf("   ⚠️  丢弃记录: %d 条", dropped)
 	}
 
 	return s.db.Close()
@@ -430,5 +455,5 @@ func (s *DetailStorage) GetNodeID() string {
 
 // GetStats 获取存储统计信息
 func (s *DetailStorage) GetStats() (writeCount, flushCount, dropCount uint64) {
-	return s.writeCount, s.flushCount, s.dropCount
+	return s.writeCount.Load(), s.flushCount.Load(), s.dropCount.Load()
 }

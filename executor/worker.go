@@ -37,6 +37,16 @@ func NewWorkerDependencyContext() *WorkerDependencyContext {
 	}
 }
 
+// reset 清空上下文以供下一轮请求复用
+//
+// 原先每轮请求都 new 一个新上下文，等于每请求两次 map 分配；而上下文的生命周期
+// 不超过一轮请求（RequestContext 只在 executeRequestUnified 内存活，收集到的结果
+// 持有的是 ExtractAll 新建的 map，不与此处的 map 共享底层），因此原地清空即可
+func (c *WorkerDependencyContext) reset() {
+	clear(c.extractedVars)
+	clear(c.failedAPIs)
+}
+
 // Worker 工作单元
 type Worker struct {
 	id          uint64
@@ -49,6 +59,17 @@ type Worker struct {
 	controller  Controller               // 控制器
 	depContext  *WorkerDependencyContext // 本地依赖上下文
 	logger      logger.ILogger
+
+	// extractorCache 按 API 名缓存提取器管理器
+	//
+	// NewExtractorManager 的构造成本很高：内部 NewVariableResolver 要建一张近百项的
+	// template.FuncMap（近百个闭包分配），正则型提取器还要 regexp.Compile。而提取器
+	// 配置不参与变量替换（ReplaceInAPIConfig 原样透传 Extractors），同一 API 名的配置
+	// 恒定不变，因此可按名缓存，把每请求一次的构造降为每 API 一次
+	//
+	// 缓存按 Worker 持有而非全局共享：各 Worker 在自己的 goroutine 上读写，
+	// 无需加锁，也不会让提取器内部状态跨 goroutine
+	extractorCache map[string]*ExtractorManager
 }
 
 // WorkerConfig Worker配置
@@ -81,6 +102,8 @@ func NewWorker(cfg WorkerConfig, varResolver *config.VariableResolver) *Worker {
 		controller:  ctrl,
 		depContext:  NewWorkerDependencyContext(),
 		logger:      cfg.Logger,
+
+		extractorCache: make(map[string]*ExtractorManager),
 	}
 }
 
@@ -119,8 +142,8 @@ func (w *Worker) Run(ctx context.Context) error {
 			return nil
 		}
 
-		// 每次新的请求序列，重置本地依赖上下文
-		w.depContext = NewWorkerDependencyContext()
+		// 每次新的请求序列，重置本地依赖上下文（原地清空，不重新分配）
+		w.depContext.reset()
 
 		// 计算分组ID（(Worker ID + 1) * 100000 + 请求序号，确保全局唯一）
 		groupID := (w.id+1)*100000 + i + 1
@@ -412,8 +435,8 @@ func (w *Worker) extractAndStoreVarsLocal(apiCfg *APIConfig, req *Request, resp 
 		}
 	}
 
-	// 创建提取器管理器
-	manager, err := NewExtractorManager(apiCfg.Extractors, w.logger)
+	// 取（或首次构造）该 API 的提取器管理器，详见 extractorCache 的说明
+	manager, err := w.extractorManagerFor(apiCfg)
 	if err != nil {
 		w.logger.Errorf("Worker %d: 创建提取器失败 [%s]: %v", w.id, apiCfg.Name, err)
 		return nil
@@ -436,10 +459,25 @@ func (w *Worker) extractAndStoreVarsLocal(apiCfg *APIConfig, req *Request, resp 
 			key := fmt.Sprintf("%s.%s", apiCfg.Name, k)
 			w.depContext.extractedVars[key] = v
 		}
-		w.logger.Infof("📦 Worker %d: API [%s] 提取了 %d 个变量", w.id, apiCfg.Name, len(extractedVars))
+		// Debug 而非 Info：每个带提取器的请求都会走到这里，Info 级别会按请求数刷屏
+		w.logger.Debugf("📦 Worker %d: API [%s] 提取了 %d 个变量", w.id, apiCfg.Name, len(extractedVars))
 	}
 
 	return extractedVars
+}
+
+// extractorManagerFor 返回该 API 的提取器管理器，首次调用时构造并缓存
+func (w *Worker) extractorManagerFor(apiCfg *APIConfig) (*ExtractorManager, error) {
+	if manager, ok := w.extractorCache[apiCfg.Name]; ok {
+		return manager, nil
+	}
+
+	manager, err := NewExtractorManager(apiCfg.Extractors, w.logger)
+	if err != nil {
+		return nil, err
+	}
+	w.extractorCache[apiCfg.Name] = manager
+	return manager, nil
 }
 
 // executeVerifications 执行API级别的验证

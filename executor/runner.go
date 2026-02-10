@@ -14,8 +14,10 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net/url"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/kamalyes/go-logger"
@@ -49,9 +51,9 @@ type RunOptions struct {
 	IsDistributed     bool                  // 是否为分布式模式
 	ExternalContext   context.Context       // 外部传入的 context（用于 Slave 控制）
 	ExternalCollector *statistics.Collector // 外部 Collector（Slave 模式使用）
-	NoReport          bool                  // 不生成报告文件（Slave 模式使用）
-	NoPrint           bool                  // 不打印报告（Slave 模式使用）
-	NoWait            bool                  // 不等待退出（Slave 模式使用）
+	NoReport          bool                  // 不生成报告文件（Slave 模式与 -no-report 使用）
+	NoPrint           bool                  // 不打印报告（Slave 模式与 -no-print 使用）
+	NoWait            bool                  // 不等待退出（Slave 模式与 -no-wait 使用）
 }
 
 // RunResult 任务执行结果
@@ -293,7 +295,7 @@ func startMemoryMonitor(ctx context.Context, maxMemory string, cancel context.Ca
 				snapshot.Goroutines)
 		}).
 		OnCritical(func(snapshot osx.Snapshot) {
-			log.Warnf("\n[🚨 严重] 内存使用超过阈值: %s / %s (%.1f%%)",
+			log.Warnf("[🚨 严重] 内存使用超过阈值: %s / %s (%.1f%%)",
 				units.FormatBytes(snapshot.Alloc),
 				maxMemory,
 				float64(snapshot.Alloc)/float64(threshold)*100)
@@ -343,7 +345,7 @@ func saveReports(exec *Executor, report *statistics.Report, reportPrefix string,
 		return fmt.Errorf("生成HTML报告失败: %w", err)
 	}
 
-	log.Info("🌐 在浏览器中打开查看详细图表: file:///%s", htmlReportFile)
+	log.Info("🌐 在浏览器中打开查看详细图表: %s", fileURL(htmlReportFile))
 
 	// 确保所有数据都写入存储
 	if err := exec.GetCollector().Close(); err != nil {
@@ -353,6 +355,25 @@ func saveReports(exec *Executor, report *statistics.Report, reportPrefix string,
 	return nil
 }
 
+// fileURL 把本地文件路径转成可点击的 file:// URL
+//
+// 报告路径是相对于工作目录的（如 stress-report/1793610589/index.html），
+// 直接拼 "file:///" + 相对路径得到的是指向文件系统根的坏链接，点开必然 404
+// 这里先解析成绝对路径，再交给 url.URL 处理转义（路径含空格时不转义同样打不开）
+func fileURL(path string) string {
+	abs, err := filepath.Abs(path)
+	if err != nil {
+		abs = path
+	}
+	// Windows 的 C:\dir\file 需转成 /C:/dir/file 才是合法的 file URL 路径
+	abs = filepath.ToSlash(abs)
+	if !strings.HasPrefix(abs, "/") {
+		abs = "/" + abs
+	}
+	u := url.URL{Scheme: "file", Path: abs}
+	return u.String()
+}
+
 // waitForExit 等待退出
 func waitForExit(exec *Executor, sigCh chan os.Signal, ctx context.Context, log logger.ILogger) {
 	realtimePort := 8088
@@ -360,14 +381,14 @@ func waitForExit(exec *Executor, sigCh chan os.Signal, ctx context.Context, log 
 		realtimePort = realtimeServer.GetPort()
 	}
 
-	log.Info("\n💡 提示: 实时报告服务器仍在运行")
+	log.Info("💡 提示: 实时报告服务器仍在运行")
 	log.Info("   访问 http://localhost:%d 查看实时报告", realtimePort)
 	log.Info("   按 Ctrl+C 退出程序")
 
 	select {
 	case <-sigCh:
-		log.Info("\n👋 程序已退出")
+		log.Info("👋 程序已退出")
 	case <-ctx.Done():
-		log.Info("\n👋 程序已退出")
+		log.Info("👋 程序已退出")
 	}
 }

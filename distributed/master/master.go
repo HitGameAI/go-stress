@@ -415,7 +415,7 @@ func (m *Master) processTaskWithSlaves(task *common.Task, slaves []*common.Slave
 			m.slavePool.AddTask(st.SlaveID, st.TaskID)
 		}).
 		OnError(func(idx int, st *common.SubTask, err error) {
-			m.logger.Error("Failed to dispatch subtask",
+			m.logger.ErrorKV("Failed to dispatch subtask",
 				"task_id", st.TaskID,
 				"subtask_id", st.SubTaskID,
 				"slave_id", st.SlaveID,
@@ -431,7 +431,7 @@ func (m *Master) processTaskWithSlaves(task *common.Task, slaves []*common.Slave
 		m.logger.ErrorKV("All subtasks failed", "task_id", task.ID)
 		m.taskQueue.MoveToFailed(task.ID, "all subtasks failed")
 	} else if success < len(subTasks) {
-		m.logger.Warn("Some subtasks failed",
+		m.logger.WarnKV("Some subtasks failed",
 			"task_id", task.ID,
 			"success", success,
 			"total", len(subTasks))

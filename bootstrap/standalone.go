@@ -30,6 +30,11 @@ type StandaloneOptions struct {
 	MaxMemory    string
 	Logger       logger.ILogger
 	ConfigFunc   func() *config.Config
+
+	// 压测结束后的行为开关
+	NoReport bool // 不生成报告文件
+	NoPrint  bool // 不在终端打印报告表格
+	NoWait   bool // 压测结束即退出，不驻留实时报告服务器
 }
 
 // RunStandalone 运行独立模式
@@ -46,6 +51,9 @@ func RunStandalone(opts StandaloneOptions) error {
 		Logger:        opts.Logger,
 		ConfigFunc:    opts.ConfigFunc,
 		IsDistributed: false,
+		NoReport:      opts.NoReport,
+		NoPrint:       opts.NoPrint,
+		NoWait:        opts.NoWait,
 	})
 
 	return result.Error

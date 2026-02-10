@@ -77,6 +77,9 @@ var (
 	// 报告配置
 	reportPrefix string            // 报告文件名前缀
 	storageMode  types.StorageMode // 存储模式 (memory/db)
+	noReport     bool              // 不生成报告文件
+	noPrint      bool              // 不打印报告表格
+	noWait       bool              // 压测结束即退出
 
 	// 内存限制
 	maxMemory string // 内存使用阈值
@@ -152,6 +155,9 @@ func init() {
 	// 报告配置
 	flag.StringVar(&reportPrefix, "report-prefix", "stress-report", "报告文件名前缀")
 	flag.Var(&storageMode, "storage", "存储模式 (memory:内存 | sqlite:SQLite数据库 | badger:BadgerDB高性能存储)")
+	flag.BoolVar(&noReport, "no-report", false, "不生成报告文件")
+	flag.BoolVar(&noPrint, "no-print", false, "不在终端打印报告表格")
+	flag.BoolVar(&noWait, "no-wait", false, "压测结束即退出，不驻留实时报告服务器（CI/脚本场景）")
 
 	// 内存限制
 	flag.StringVar(&maxMemory, "max-memory", "", "内存使用阈值，超过后自动停止测试 (如: 1GB, 512MB, 2048KB)")
@@ -184,24 +190,33 @@ func main() {
 	// 初始化日志器
 	initLogger()
 
+	// 日志默认走 go-logger 的异步批量输出器，队列中的条目不刷写就会随进程消失
+	// 退出路径因此一律走 run 的 return，不再用 os.Exit 直接终止
+	defer logger.Flush()
+
+	run()
+}
+
+// run 执行主流程，正常结束时 return，以保证 main 中的日志刷写得以执行
+func run() {
 	// 处理子命令
 	if len(os.Args) >= 2 {
 		switch os.Args[1] {
 		case "help", "-h", "--help":
 			printBanner()
 			printSimpleUsage()
-			os.Exit(0)
+			return
 		case "variables", "vars", "-vars":
 			printBanner()
 			printVariablesHelp()
-			os.Exit(0)
+			return
 		case "examples", "demo", "-demo":
 			printBanner()
 			printExamplesHelp()
-			os.Exit(0)
+			return
 		case "version", "-v", "--version":
 			printVersion()
-			os.Exit(0)
+			return
 		}
 	}
 
@@ -209,7 +224,7 @@ func main() {
 	if len(os.Args) == 1 {
 		printBanner()
 		printSimpleUsage()
-		os.Exit(0)
+		return
 	}
 
 	// 打印banner
@@ -269,24 +284,23 @@ func buildConfigFromFlags() *config.Config {
 
 // initLogger 初始化日志器
 func initLogger() {
-	logConfig := logger.DefaultConfig()
+	log := logger.New()
 
 	// 优先级：verbose > quiet > logLevel
 	switch {
 	case verbose:
-		logConfig = logConfig.WithLevel(logger.DEBUG).WithShowCaller(true)
+		log = log.WithLevel(logger.DEBUG).WithShowCaller(true)
 	case quiet:
-		logConfig = logConfig.WithLevel(logger.ERROR)
+		log = log.WithLevel(logger.ERROR)
 	default:
-		logConfig = logConfig.WithLevel(logLevel.Level)
+		log = log.WithLevel(logLevel.Level)
 	}
 
-	// 配置输出
+	// 配置输出：着色由 go-logger 按输出目标自动判定，落盘时无需再手动关闭
 	if logFile != "" {
-		rotateWriter := logger.NewRotateWriter(logFile, 100*1024*1024, 5)
-		logConfig = logConfig.WithOutput(rotateWriter).WithColorful(false)
+		log = log.WithOutput(logger.NewRotateWriter(logFile, 0, 0))
 	}
-	logger.SetDefault(logger.NewLogger(logConfig))
+	logger.SetDefault(log)
 }
 
 // parseHeader 解析请求头字符串
@@ -306,8 +320,10 @@ func parseHeader(header string, headers map[string]string) {
 }
 
 // printBanner 打印启动banner
+// 用 fmt 而非 logger：banner 是程序界面不是日志事件，走异步日志队列会被推到
+// 后续 fmt 输出之后（顺序错乱），还会套上时间戳与 [INFO] 前缀
 func printBanner() {
-	logger.Default.Info(`
+	fmt.Print(`
 ╔══════════════════════════════════════════════════════════╗
 ║                                                          ║
 ║     ⚡ Go Stress Testing Tool ⚡                        ║
@@ -685,6 +701,9 @@ func runStandaloneMode() {
 		MaxMemory:    maxMemory,
 		Logger:       logger.Default,
 		ConfigFunc:   buildConfigFromFlags,
+		NoReport:     noReport,
+		NoPrint:      noPrint,
+		NoWait:       noWait,
 	}
 	if err := bootstrap.RunStandalone(opts); err != nil {
 		logger.Default.Fatalf("❌ 运行 Standalone 失败: %v", err)

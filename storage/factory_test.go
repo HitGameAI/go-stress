@@ -11,7 +11,7 @@
 package storage
 
 import (
-	"os"
+	"path/filepath"
 	"testing"
 	"time"
 
@@ -20,7 +20,7 @@ import (
 )
 
 func TestStorageFactory(t *testing.T) {
-	log := logger.NewLogger(nil)
+	log := logger.NewLogger()
 	factory := NewStorageFactory(log)
 
 	t.Run("GetSupportedTypes", func(t *testing.T) {
@@ -97,8 +97,10 @@ func TestStorageFactory(t *testing.T) {
 	})
 
 	t.Run("CreateSQLiteStorage", func(t *testing.T) {
-		dbPath := "./test-storage.db"
-		defer os.Remove(dbPath)
+		// t.TempDir 而非固定路径：SQLite 开 WAL 后还会生成 -shm/-wal 两个边车文件，
+		// os.Remove(dbPath) 删不掉它们，残留既污染仓库，又让下一轮跑在旧库上
+		// 撞出 UNIQUE constraint failed；TempDir 由 testing 负责整目录清理
+		dbPath := filepath.Join(t.TempDir(), "test-storage.db")
 
 		storage, err := factory.CreateStorage(&StorageConfig{
 			Type:   StorageModeSQLite,
@@ -130,8 +132,7 @@ func TestStorageFactory(t *testing.T) {
 	})
 
 	t.Run("CreateBadgerStorage", func(t *testing.T) {
-		dbPath := "./test-badger-data"
-		defer os.RemoveAll(dbPath)
+		dbPath := filepath.Join(t.TempDir(), "test-badger-data")
 
 		storage, err := factory.CreateStorage(&StorageConfig{
 			Type:   StorageModeBadger,
@@ -181,12 +182,11 @@ func TestStorageFactory(t *testing.T) {
 }
 
 func TestStorageFilter(t *testing.T) {
-	log := logger.NewLogger(nil)
+	log := logger.NewLogger()
 	factory := NewStorageFactory(log)
 
 	// 创建 BadgerDB 存储用于过滤测试
-	dbPath := "./test-filter-badger"
-	defer os.RemoveAll(dbPath)
+	dbPath := filepath.Join(t.TempDir(), "test-filter-badger")
 
 	storage, err := factory.CreateStorage(&StorageConfig{
 		Type:   StorageModeBadger,

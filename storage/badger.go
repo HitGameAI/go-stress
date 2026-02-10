@@ -162,7 +162,23 @@ func (s *BadgerStorage) runEventLoop() {
 		}).
 		OnTicker(1*time.Second, flush). // 每秒定时刷新
 		OnTicker(5*time.Minute, runGC). // 每5分钟GC
-		OnShutdown(flush).              // 关闭时最后一次刷新
+		// OnShutdown 先排空通道再落盘：事件循环退出时通道里可能还积着上万条
+		// 尚未取走的记录（writeChan 缓冲 10000），只 flush 内存里的 batch 会把
+		// 这一批结果连同最后的统计一起丢掉
+		OnShutdown(func() {
+			for {
+				select {
+				case detail := <-s.writeChan:
+					batch = append(batch, detail)
+					if len(batch) >= s.batchSize {
+						flush()
+					}
+				default:
+					flush()
+					return
+				}
+			}
+		}).
 		Run()
 }
 
@@ -266,6 +282,11 @@ func (s *BadgerStorage) Query(offset, limit int, statusFilter StatusFilter, node
 				continue
 			}
 
+			// nodeID / taskID 过滤（前缀未必能完全收窄，见 makePrefix）
+			if !s.matchIDs(&detail, nodeID, taskID) {
+				continue
+			}
+
 			// 状态过滤
 			if !s.matchFilter(&detail, statusFilter) {
 				continue
@@ -332,7 +353,7 @@ func (s *BadgerStorage) Count(statusFilter StatusFilter, nodeID, taskID string) 
 				continue
 			}
 
-			if s.matchFilter(&detail, statusFilter) {
+			if s.matchIDs(&detail, nodeID, taskID) && s.matchFilter(&detail, statusFilter) {
 				count++
 			}
 		}
@@ -345,13 +366,30 @@ func (s *BadgerStorage) Count(statusFilter StatusFilter, nodeID, taskID string) 
 
 // makePrefix 生成查询前缀
 func (s *BadgerStorage) makePrefix(nodeID, taskID string) string {
-	if nodeID == "" && taskID == "" {
+	// 键的布局是 req:<nodeID>:<taskID>:<ts>:<id>，taskID 不是前导分量，
+	// 只给 taskID 时拼出的 "req::<taskID>:" 匹配不到任何真实键（真实键形如
+	// req:node-1:task-1:...），过滤结果恒为空；此时只能退回全量扫描，
+	// 由 matchIDs 逐条比对
+	if nodeID == "" {
 		return "req:"
 	}
 	if taskID == "" {
 		return fmt.Sprintf("req:%s:", nodeID)
 	}
 	return fmt.Sprintf("req:%s:%s:", nodeID, taskID)
+}
+
+// matchIDs 比对 nodeID/taskID，补上前缀无法收窄的那部分过滤
+// 前缀已收窄的情况下再比对一次的成本可忽略，换来的是 nodeID/taskID 自身含 ':'
+// 时也不会因前缀过度匹配而多算
+func (s *BadgerStorage) matchIDs(detail *RequestResult, nodeID, taskID string) bool {
+	if nodeID != "" && detail.NodeID != nodeID {
+		return false
+	}
+	if taskID != "" && detail.TaskID != taskID {
+		return false
+	}
+	return true
 }
 
 // matchFilter 匹配状态过滤器
@@ -380,9 +418,11 @@ func (s *BadgerStorage) Close() error {
 
 	s.logger.Info("🔒 关闭 BadgerDB 存储...")
 
-	// 取消 context，触发事件循环关闭
+	// 取消 context，触发事件循环关闭（OnShutdown 负责排空并落盘）
+	//
+	// 不 close(writeChan)：已关闭的通道在 reflect.Select 里恒为 ready，会让事件
+	// 循环空转；且与并发的 Write 撞上时会 panic: send on closed channel
 	s.cancel()
-	close(s.writeChan)
 	s.wg.Wait()
 
 	return s.db.Close()

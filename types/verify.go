@@ -10,7 +10,7 @@
  */
 package types
 
-import "github.com/kamalyes/go-toolbox/pkg/validator"
+import validator "github.com/kamalyes/go-argus"
 
 // VerifyType 验证类型
 type VerifyType string

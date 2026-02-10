@@ -13,6 +13,7 @@ package executor
 import (
 	"context"
 	"fmt"
+	"strconv"
 	"strings"
 	"sync/atomic"
 	"time"
@@ -150,14 +151,16 @@ func (pt *ProgressTracker) printSimpleProgress(elapsed time.Duration) {
 	// 计算QPS
 	qps := float64(completed) / elapsed.Seconds()
 
-	// 构建表格数据
-	tableData := []map[string]interface{}{
+	// 用 [][]string 而非 []map：ConsoleTable 从 map 切片取表头时是 range map，
+	// 列序每次刷新都可能变，进度行会跳来跳去；首行即表头，列序确定
+	tableData := [][]string{
+		{"进度", "耗时", "预计剩余", "QPS", "并发数"},
 		{
-			"进度":   fmt.Sprintf("%d/%d (%.2f%%)", completed, total, percentage),
-			"耗时":   elapsed.Round(time.Second).String(),
-			"预计剩余": eta.Round(time.Second).String(),
-			"QPS":  fmt.Sprintf("%.2f", qps),
-			"并发数":  pt.workerCount,
+			fmt.Sprintf("%d/%d (%.2f%%)", completed, total, percentage),
+			elapsed.Round(time.Second).String(),
+			eta.Round(time.Second).String(),
+			fmt.Sprintf("%.2f", qps),
+			strconv.FormatUint(uint64(pt.workerCount), 10),
 		},
 	}
 

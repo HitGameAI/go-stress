@@ -112,18 +112,15 @@ func (c *Collector) Collect(result *RequestResult) {
 		// 只有非跳过的请求才计入失败
 		c.failedRequests.Add(1)
 
-		// 记录错误 - 使用 syncx.Map 线程安全
+		// 记录错误 - 原子自增，详见 incrementCounter 的说明
 		if result.Error != nil {
-			errMsg := result.Error.Error()
-			old, _ := c.errors.LoadOrStore(errMsg, 0)
-			c.errors.Store(errMsg, old+1)
+			incrementCounter(c.errors, result.Error.Error())
 		}
 	}
 
-	// 统计状态码 - 使用 syncx.Map
+	// 统计状态码 - 原子自增，详见 incrementCounter 的说明
 	if result.StatusCode > 0 {
-		old, _ := c.statusCodes.LoadOrStore(result.StatusCode, 0)
-		c.statusCodes.Store(result.StatusCode, old+1)
+		incrementCounter(c.statusCodes, result.StatusCode)
 	}
 
 	// 统计耗时 - 使用 syncx.WithLock 包装
@@ -145,6 +142,27 @@ func (c *Collector) Collect(result *RequestResult) {
 
 	// 直接写入存储
 	c.storage.Write(result)
+}
+
+// incrementCounter 对 syncx.Map 中的计数器做原子自增
+//
+// 不能写成 LoadOrStore + Store：那是读-改-写三步，两个 goroutine 同时读到同一个旧值
+// 时，后写的会覆盖先写的，计数被吞。压测恰恰是高并发场景，越是并发高、错误集中，
+// 吞掉的越多，最终表现为"失败请求 1000 条，但错误表里次数之和只有几百"的自相矛盾报告
+//
+// syncx.Map.Update 同样是 Load + Store，不具备原子性，故此处用 CAS 重试：
+// sync.Map 的 LoadOrStore 与 CompareAndSwap 都是原子的，组合起来即可无锁完成自增
+func incrementCounter[K comparable](m *syncx.Map[K, uint64], key K) {
+	for {
+		old, loaded := m.LoadOrStore(key, 1)
+		if !loaded {
+			return // 本次调用完成了首次插入，计数已是 1
+		}
+		if m.CompareAndSwap(key, old, old+1) {
+			return
+		}
+		// CAS 失败说明期间有并发写入，重读当前值后重试
+	}
 }
 
 // GetMetrics 获取实时指标

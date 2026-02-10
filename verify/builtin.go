@@ -1,4 +1,4 @@
-﻿/*
+/*
  * @Author: kamalyes 501893067@qq.com
  * @Date: 2025-12-30 00:00:00
  * @LastEditors: kamalyes 501893067@qq.com
@@ -15,8 +15,8 @@ import (
 	"strconv"
 	"strings"
 
+	validator "github.com/kamalyes/go-argus"
 	"github.com/kamalyes/go-stress/config"
-	"github.com/kamalyes/go-toolbox/pkg/validator"
 )
 
 // ===== HTTP验证器（统一入口） =====

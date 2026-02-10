@@ -13,14 +13,14 @@ package types
 import (
 	"time"
 
-	"github.com/kamalyes/go-toolbox/pkg/validator"
+	validator "github.com/kamalyes/go-argus"
 )
 
 // RequestResult 请求结果（用于统计和存储）
 type RequestResult struct {
 	ID         string        `json:"id"`                    // 唯一ID（Snowflake生成）
-	NodeID     string        `json:"node_id,omitempty"`    // 节点ID（分布式模式下标识数据来源，单机模式为"local"）
-	TaskID     string        `json:"task_id,omitempty"`    // 任务ID（分布式模式由Master分配，单机模式生成唯一ID）
+	NodeID     string        `json:"node_id,omitempty"`     // 节点ID（分布式模式下标识数据来源，单机模式为"local"）
+	TaskID     string        `json:"task_id,omitempty"`     // 任务ID（分布式模式由Master分配，单机模式生成唯一ID）
 	Success    bool          `json:"success"`               // 是否成功
 	StatusCode int           `json:"status_code"`           // HTTP 状态码
 	Duration   time.Duration `json:"duration"`              // 请求耗时

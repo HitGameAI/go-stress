@@ -72,7 +72,7 @@ func RunMaster(opts MasterOptions) error {
 	signal.Notify(sigCh, os.Interrupt, syscall.SIGTERM)
 	go func() {
 		<-sigCh
-		opts.Logger.Warn("\n\n⚠️  收到中断信号，正在停止...")
+		opts.Logger.Warn("⚠️  收到中断信号，正在停止...")
 		cancel()
 		m.Stop()
 	}()
@@ -84,7 +84,7 @@ func RunMaster(opts MasterOptions) error {
 	opts.Logger.Info("✅ Master 节点运行中...")
 	opts.Logger.Info("   gRPC 端口: %d", opts.GRPCPort)
 	opts.Logger.Info("   HTTP 端口: %d", opts.HTTPPort)
-	opts.Logger.Info("\n💡 使用以下命令提交任务:")
+	opts.Logger.Info("💡 使用以下命令提交任务:")
 	opts.Logger.Info("   curl -X POST http://localhost:%d/api/v1/tasks \\", opts.HTTPPort)
 	opts.Logger.Info("     -H 'Content-Type: application/json' \\")
 	opts.Logger.Info("     -d @task_config.json")

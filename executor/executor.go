@@ -135,7 +135,8 @@ func NewExecutor(cfg *config.Config, storageMode StorageMode, storagePath string
 // createClientFactory 创建客户端工厂
 func (e *Executor) createClientFactory() ClientFactory {
 	return func() (Client, error) {
-		e.logger.Infof("创建客户端: protocol=%s (type=%T)", e.config.Protocol, e.config.Protocol)
+		// Debug 而非 Info：本闭包每个 worker 各调一次，-c 1000 时会刷出一千行同样的内容
+		e.logger.Debugf("创建客户端: protocol=%s (type=%T)", e.config.Protocol, e.config.Protocol)
 		switch e.config.Protocol {
 		case ProtocolHTTP:
 			return protocol.NewHTTPClient(e.config)
@@ -238,7 +239,7 @@ func (e *Executor) Run(ctx context.Context) (*statistics.Report, error) {
 	if err != nil {
 		// 如果是用户主动取消，不关闭实时服务器，返回当前报告
 		if errors.Is(err, context.Canceled) {
-			e.logger.Warn("\n⚠️  压测已被用户中断")
+			e.logger.Warn("⚠️  压测已被用户中断")
 			e.logger.Info("📊 正在保存当前统计数据...")
 			return report, fmt.Errorf("执行压测失败: %w", err)
 		}
@@ -249,14 +250,14 @@ func (e *Executor) Run(ctx context.Context) (*statistics.Report, error) {
 		return nil, fmt.Errorf("执行压测失败: %w", err)
 	}
 
-	e.logger.Info("\n✅ 压测完成!")
+	e.logger.Info("✅ 压测完成!")
 	e.logger.Info("📊 实时报告服务器继续运行，按 Ctrl+C 可停止并退出")
 	return report, nil
 }
 
 // printStartInfo 打印启动信息
 func (e *Executor) printStartInfo() {
-	e.logger.Info("\n🚀 开始压测...")
+	e.logger.Info("🚀 开始压测...")
 	e.logger.Info("📊 协议: %s", e.config.Protocol)
 	e.logger.Info("🔢 并发数: %d", e.config.Concurrency)
 	e.logger.Info("📈 每并发请求数: %d", e.config.Requests)

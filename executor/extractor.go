@@ -354,8 +354,9 @@ func (m *ExtractorManager) ExtractAll(ctx *ExtractorContext, defaultValues map[s
 			if err != nil {
 				m.logger.Warn("转换变量 [%s] 失败: %v，使用原始值", name, err)
 			} else {
-				value = transformed
+				// 先打日志再覆盖 value：顺序颠倒会把"转换前 -> 转换后"打成"后 -> 后"
 				m.logger.Debug("转换变量 [%s]: %s -> %s", name, value, transformed)
+				value = transformed
 			}
 		}
 

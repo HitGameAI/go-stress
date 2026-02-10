@@ -61,7 +61,7 @@ func (s *StandaloneStrategy) PrepareContext(baseCtx context.Context) (context.Co
 	signal.Notify(sigCh, os.Interrupt, syscall.SIGTERM)
 	go func() {
 		<-sigCh
-		s.logger.Warn("\n\n⚠️  收到中断信号，正在停止...")
+		s.logger.Warn("⚠️  收到中断信号，正在停止...")
 		cancel()
 	}()
 

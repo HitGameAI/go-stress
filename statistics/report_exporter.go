@@ -135,4 +135,3 @@ func (e *ReportExporter) generateStaticFiles(reportDir, jsonFilename string) err
 
 	return nil
 }
-

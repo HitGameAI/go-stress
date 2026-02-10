@@ -37,18 +37,15 @@ func (vr *VariableReplacer) ReplaceInAPIConfig(apiCfg *APIConfig) *APIConfig {
 		return nil
 	}
 
-	// 创建新的配置副本
-	newCfg := &APIConfig{
-		Name:       apiCfg.Name,
-		URL:        vr.ReplaceString(apiCfg.URL),
-		Method:     apiCfg.Method,
-		Headers:    vr.ReplaceHeaders(apiCfg.Headers),
-		Body:       vr.ReplaceString(apiCfg.Body),
-		Verify:     apiCfg.Verify,
-		Extractors: apiCfg.Extractors,
-	}
+	// 整体复制再覆盖需替换的字段，而非逐字段列举：
+	// 逐字段写法漏掉了 Host/Path/Weight/Repeat/DependsOn，APIConfig 以后新增字段
+	// 同样会被静默丢成零值——这类缺失不会报错，只会让行为莫名其妙
+	newCfg := *apiCfg
+	newCfg.URL = vr.ReplaceString(apiCfg.URL)
+	newCfg.Headers = vr.ReplaceHeaders(apiCfg.Headers)
+	newCfg.Body = vr.ReplaceString(apiCfg.Body)
 
-	return newCfg
+	return &newCfg
 }
 
 // ReplaceString 替换字符串中的变量（两步：1.提取变量 2.动态变量）
