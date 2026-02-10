@@ -161,6 +161,12 @@ type AdvancedConfig struct {
 
 	RampUp       time.Duration `json:"ramp_up" yaml:"ramp_up"`             // 渐进式启动时间
 	RealtimePort int           `json:"realtime_port" yaml:"realtime_port"` // 实时报告服务器端口（默认8088）
+
+	// DisableTraceHeader 关闭 traceparent 请求头的注入
+	//
+	// 取反向命名，使配置省略时即为"启用"：trace 头是定位问题的主要线索，默认该开
+	// 需要逐字节复现原始请求（如签名校验把全部头纳入计算）时才关掉
+	DisableTraceHeader bool `json:"disable_trace_header,omitempty" yaml:"disable_trace_header,omitempty"`
 }
 
 // VerifyConfig 验证配置

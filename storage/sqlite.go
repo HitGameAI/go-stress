@@ -115,7 +115,8 @@ func NewDetailStorage(dbPath, nodeID string, log logger.ILogger) (*DetailStorage
 		response_body TEXT,
 		response_headers TEXT,
 		verifications TEXT,
-		extracted_vars TEXT
+		extracted_vars TEXT,
+		trace_id TEXT
 	);
 	CREATE INDEX IF NOT EXISTS idx_node_id ON %s(node_id);
 	CREATE INDEX IF NOT EXISTS idx_task_id ON %s(task_id);
@@ -128,6 +129,16 @@ func NewDetailStorage(dbPath, nodeID string, log logger.ILogger) (*DetailStorage
 	if _, err := db.Exec(schema); err != nil {
 		db.Close()
 		return nil, fmt.Errorf("创建表失败: %w", err)
+	}
+
+	// 既有库补列：CREATE TABLE IF NOT EXISTS 对已存在的表什么都不做，
+	// 旧库因此没有 trace_id，而查询按固定列名读取会直接失败
+	// 列已存在时 SQLite 报 "duplicate column name"，属预期，忽略即可
+	if _, err := db.Exec(fmt.Sprintf(
+		"ALTER TABLE %s ADD COLUMN trace_id TEXT", tableRequestDetails,
+	)); err != nil && !strings.Contains(err.Error(), "duplicate column name") {
+		db.Close()
+		return nil, fmt.Errorf("升级表结构失败: %w", err)
 	}
 
 	if dbPath != ":memory:" {
@@ -250,8 +261,8 @@ func (s *DetailStorage) insertBatch(batch []*RequestResult) error {
 		INSERT INTO %s (
 			id, node_id, task_id, group_id, api_name, timestamp, url, method, query, headers, body,
 			duration, status_code, success, skipped, size, error,
-			response_body, response_headers, verifications, extracted_vars
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+			response_body, response_headers, verifications, extracted_vars, trace_id
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 	`, tableRequestDetails))
 	if err != nil {
 		return err
@@ -287,6 +298,7 @@ func (s *DetailStorage) insertBatch(batch []*RequestResult) error {
 			string(respHeadersJSON),
 			string(verificationsJSON),
 			string(extractedVarsJSON),
+			detail.TraceID,
 		)
 		if err != nil {
 			return err
@@ -296,10 +308,20 @@ func (s *DetailStorage) insertBatch(batch []*RequestResult) error {
 	return tx.Commit()
 }
 
+// detailColumns 查询用的显式列清单，顺序与 scanDetail 的 Scan 参数严格对应
+//
+// 不用 SELECT *：列顺序由建表语句决定，而旧库经 ALTER TABLE 补列后新列排在末尾，
+// 与新建库的顺序未必一致；一旦错位，按位置 Scan 会把值塞进错误的字段且不报错
+const detailColumns = `id, node_id, task_id, group_id, api_name, timestamp,
+	url, method, query, headers, body,
+	duration, status_code, success, skipped, size, error,
+	response_body, response_headers, verifications, extracted_vars, trace_id`
+
 // Query 分页查询请求详情
 func (s *DetailStorage) Query(offset, limit int, statusFilter StatusFilter, nodeID, taskID string) ([]*RequestResult, error) {
-	query := fmt.Sprintf("SELECT * FROM %s", tableRequestDetails)
+	query := fmt.Sprintf("SELECT %s FROM %s", detailColumns, tableRequestDetails)
 	where := []string{}
+	args := []any{}
 
 	// 根据状态过滤
 	switch statusFilter {
@@ -311,14 +333,16 @@ func (s *DetailStorage) Query(offset, limit int, statusFilter StatusFilter, node
 		where = append(where, "skipped = 1")
 	}
 
-	// 根据节点ID过滤
+	// 节点/任务 ID 用占位符绑定，不得拼进 SQL：
+	// 这两个值来自实时报告与 Master 的 HTTP 查询参数，由外部完全可控，
+	// 原先的 fmt.Sprintf("node_id = '%s'", nodeID) 是一个 SQL 注入口子
 	if nodeID != "" {
-		where = append(where, fmt.Sprintf("node_id = '%s'", nodeID))
+		where = append(where, "node_id = ?")
+		args = append(args, nodeID)
 	}
-
-	// 根据任务ID过滤
 	if taskID != "" {
-		where = append(where, fmt.Sprintf("task_id = '%s'", taskID))
+		where = append(where, "task_id = ?")
+		args = append(args, taskID)
 	}
 
 	// 组装 WHERE 子句
@@ -327,20 +351,34 @@ func (s *DetailStorage) Query(offset, limit int, statusFilter StatusFilter, node
 	}
 
 	query += " ORDER BY id DESC LIMIT ? OFFSET ?"
+	args = append(args, limit, offset)
 
-	rows, err := s.db.Query(query, limit, offset)
+	rows, err := s.db.Query(query, args...)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
 
 	var results []*RequestResult
+	unscannable := 0
+	var firstScanErr error
 	for rows.Next() {
 		detail, err := s.scanDetail(rows)
 		if err != nil {
+			// 不静默丢弃：无法解析的行若直接 continue，报告里的明细会比 Count
+			// 少若干条而没有任何提示（例如旧库里存在 NULL 列，Scan 进 string/
+			// float64 会失败）。逐行告警在 schema 整体不匹配时会刷屏，
+			// 故只留首个错误并在循环结束后汇总一次
+			unscannable++
+			if firstScanErr == nil {
+				firstScanErr = err
+			}
 			continue
 		}
 		results = append(results, detail)
+	}
+	if unscannable > 0 {
+		s.logger.Warnf("⚠️  查询结果中有 %d 行无法解析已跳过（首个错误: %v）", unscannable, firstScanErr)
 	}
 
 	return results, nil
@@ -350,6 +388,7 @@ func (s *DetailStorage) Query(offset, limit int, statusFilter StatusFilter, node
 func (s *DetailStorage) Count(statusFilter StatusFilter, nodeID, taskID string) (int, error) {
 	query := fmt.Sprintf("SELECT COUNT(*) FROM %s", tableRequestDetails)
 	where := []string{}
+	args := []any{}
 
 	// 根据状态过滤
 	switch statusFilter {
@@ -361,14 +400,14 @@ func (s *DetailStorage) Count(statusFilter StatusFilter, nodeID, taskID string) 
 		where = append(where, "skipped = 1")
 	}
 
-	// 根据节点ID过滤
+	// 节点/任务 ID 用占位符绑定，理由同 Query
 	if nodeID != "" {
-		where = append(where, fmt.Sprintf("node_id = '%s'", nodeID))
+		where = append(where, "node_id = ?")
+		args = append(args, nodeID)
 	}
-
-	// 根据任务ID过滤
 	if taskID != "" {
-		where = append(where, fmt.Sprintf("task_id = '%s'", taskID))
+		where = append(where, "task_id = ?")
+		args = append(args, taskID)
 	}
 
 	// 组装 WHERE 子句
@@ -377,7 +416,7 @@ func (s *DetailStorage) Count(statusFilter StatusFilter, nodeID, taskID string) 
 	}
 
 	var count int
-	err := s.db.QueryRow(query).Scan(&count)
+	err := s.db.QueryRow(query, args...).Scan(&count)
 	return count, err
 }
 
@@ -389,6 +428,8 @@ func (s *DetailStorage) scanDetail(rows *sql.Rows) (*RequestResult, error) {
 		success, skipped                     int
 		headersJSON, respHeadersJSON         string
 		verificationsJSON, extractedVarsJSON string
+		// 旧库经 ALTER TABLE 补出的 trace_id 对历史行为 NULL，需用可空类型接
+		traceID sql.NullString
 	)
 
 	err := rows.Scan(
@@ -396,6 +437,7 @@ func (s *DetailStorage) scanDetail(rows *sql.Rows) (*RequestResult, error) {
 		&detail.URL, &detail.Method, &detail.Query, &headersJSON, &detail.Body,
 		&duration, &detail.StatusCode, &success, &skipped, &detail.Size, &detail.ErrorMsg,
 		&detail.ResponseBody, &respHeadersJSON, &verificationsJSON, &extractedVarsJSON,
+		&traceID,
 	)
 	if err != nil {
 		return nil, err
@@ -405,6 +447,7 @@ func (s *DetailStorage) scanDetail(rows *sql.Rows) (*RequestResult, error) {
 	detail.Duration = time.Duration(duration) * time.Microsecond
 	detail.Success = success == 1
 	detail.Skipped = skipped == 1
+	detail.TraceID = traceID.String
 
 	json.Unmarshal([]byte(headersJSON), &detail.Headers)
 	json.Unmarshal([]byte(respHeadersJSON), &detail.ResponseHeaders)

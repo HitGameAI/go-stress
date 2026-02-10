@@ -33,6 +33,8 @@ type Scheduler struct {
 	varResolver      *config.VariableResolver // 变量解析器
 	controller       Controller               // 控制器
 	logger           logger.ILogger
+
+	injectTraceHeader bool // 是否向请求注入 traceparent 头
 }
 
 // SchedulerConfig 调度器配置
@@ -47,6 +49,8 @@ type SchedulerConfig struct {
 	VarResolver      *config.VariableResolver // 变量解析器
 	Controller       Controller               // 控制器（可选）
 	Logger           logger.ILogger
+
+	InjectTraceHeader bool // 是否向请求注入 traceparent 头
 }
 
 // NewScheduler 创建调度器
@@ -68,6 +72,8 @@ func NewScheduler(cfg SchedulerConfig) *Scheduler {
 		varResolver:      cfg.VarResolver,
 		controller:       ctrl,
 		logger:           cfg.Logger,
+
+		injectTraceHeader: cfg.InjectTraceHeader,
 	}
 }
 
@@ -140,6 +146,8 @@ func (s *Scheduler) runWorker(ctx context.Context, workerID uint64) error {
 		APISelector: s.apiSelector,
 		Controller:  s.controller,
 		Logger:      s.logger,
+
+		InjectTraceHeader: s.injectTraceHeader,
 	}, s.varResolver)
 
 	// 运行worker

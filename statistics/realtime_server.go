@@ -271,13 +271,11 @@ func (s *RealtimeServer) handleDetails(w http.ResponseWriter, r *http.Request) {
 		fmt.Sscanf(l, "%d", &limit)
 	}
 
-	if l := query.Get("nodeId"); l != "" {
-		fmt.Sscanf(l, "%d", &nodeId)
-	}
-
-	if t := query.Get("taskId"); t != "" {
-		fmt.Sscanf(t, "%d", &taskId)
-	}
+	// 直接取字符串而非 Sscanf("%d")：nodeId/taskId 都是字符串（如 "node-1"），
+	// 用 %d 扫进 *string 会得到 "bad verb '%d' for string" 并保持空值，
+	// 于是这两个过滤条件一直静默失效
+	nodeId = query.Get("nodeId")
+	taskId = query.Get("taskId")
 
 	// 限制每次最多返回1000条
 	if limit > 1000 {

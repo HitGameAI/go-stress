@@ -81,6 +81,9 @@ var (
 	noPrint      bool              // 不打印报告表格
 	noWait       bool              // 压测结束即退出
 
+	// 链路追踪
+	noTraceHeader bool // 不注入 traceparent 请求头
+
 	// 内存限制
 	maxMemory string // 内存使用阈值
 
@@ -158,6 +161,7 @@ func init() {
 	flag.BoolVar(&noReport, "no-report", false, "不生成报告文件")
 	flag.BoolVar(&noPrint, "no-print", false, "不在终端打印报告表格")
 	flag.BoolVar(&noWait, "no-wait", false, "压测结束即退出，不驻留实时报告服务器（CI/脚本场景）")
+	flag.BoolVar(&noTraceHeader, "no-trace-header", false, "不注入 traceparent 请求头（默认注入，便于与被压服务的链路对齐）")
 
 	// 内存限制
 	flag.StringVar(&maxMemory, "max-memory", "", "内存使用阈值，超过后自动停止测试 (如: 1GB, 512MB, 2048KB)")
@@ -252,6 +256,12 @@ func buildConfigFromFlags() *config.Config {
 	cfg.Method = method
 	cfg.Timeout = timeout
 	cfg.Body = body
+
+	// 链路追踪开关（DefaultConfig 已给出 Advanced，此处只覆盖本项）
+	if cfg.Advanced == nil {
+		cfg.Advanced = &config.AdvancedConfig{}
+	}
+	cfg.Advanced.DisableTraceHeader = noTraceHeader
 
 	// 解析Headers
 	cfg.Headers = make(map[string]string)

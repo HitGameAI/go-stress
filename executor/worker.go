@@ -60,6 +60,10 @@ type Worker struct {
 	depContext  *WorkerDependencyContext // 本地依赖上下文
 	logger      logger.ILogger
 
+	// trace 本 Worker 专属的 trace 标识生成器（无锁，详见 traceGen）
+	trace             *traceGen
+	injectTraceHeader bool
+
 	// extractorCache 按 API 名缓存提取器管理器
 	//
 	// NewExtractorManager 的构造成本很高：内部 NewVariableResolver 要建一张近百项的
@@ -82,6 +86,8 @@ type WorkerConfig struct {
 	APISelector APISelector // API选择器（必需）
 	Controller  Controller  // 控制器（可选）
 	Logger      logger.ILogger
+
+	InjectTraceHeader bool // 是否向请求注入 traceparent 头
 }
 
 // NewWorker 创建Worker
@@ -102,6 +108,9 @@ func NewWorker(cfg WorkerConfig, varResolver *config.VariableResolver) *Worker {
 		controller:  ctrl,
 		depContext:  NewWorkerDependencyContext(),
 		logger:      cfg.Logger,
+
+		trace:             newTraceGen(),
+		injectTraceHeader: cfg.InjectTraceHeader,
 
 		extractorCache: make(map[string]*ExtractorManager),
 	}
@@ -226,6 +235,24 @@ func (w *Worker) executeRequestUnified(ctx context.Context, source RequestSource
 	// 构建请求
 	req := BuildRequest(apiCfg)
 
+	// 为本次请求生成 trace 标识，三处同时用上：
+	//  1. 放进 ctx —— go-logger 的 *Context* 系列会自动把 trace_id 带进日志，
+	//     于是同一请求在本工具里产生的多条日志能串起来
+	//  2. 注入 traceparent 请求头 —— 被压服务只要接了链路中间件就会续上同一条
+	//     trace，服务端日志因此能与此处的结果对齐。框架侧的问题即使当下改不了，
+	//     至少能从一条失败请求直查到服务端那次调用
+	//  3. 记入 RequestResult —— 报告与存储里留下可检索的线索
+	traceID, traceparent := w.trace.next()
+	ctx = logger.ContextWithTraceID(ctx, traceID)
+	if w.injectTraceHeader {
+		// Headers 来自 ReplaceHeaders 的新 map，就地写入不会污染原始配置；
+		// 但配置未声明任何头时它是 nil，需先建出来
+		if req.Headers == nil {
+			req.Headers = make(map[string]string, 1)
+		}
+		req.Headers[HeaderTraceparent] = traceparent
+	}
+
 	// 执行请求（通过中间件链）
 	resp, err := w.handler(ctx, req)
 
@@ -248,6 +275,7 @@ func (w *Worker) executeRequestUnified(ctx context.Context, source RequestSource
 	result.ExtractedVars = extractedVars
 	result.APIName = apiCfg.Name
 	result.GroupID = groupID
+	result.TraceID = traceID
 	w.collector.Collect(result)
 }
 

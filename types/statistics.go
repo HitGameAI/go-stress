@@ -32,6 +32,7 @@ type RequestResult struct {
 	SkipReason string        `json:"skip_reason,omitempty"` // 跳过原因（记录具体哪个依赖API失败）
 	GroupID    uint64        `json:"group_id"`              // 分组ID（同一个worker的依赖链共享同一个GroupID）
 	APIName    string        `json:"api_name,omitempty"`    // API名称（如 create_ticket, send_message）
+	TraceID    string        `json:"trace_id,omitempty"`    // W3C trace-id（随 traceparent 头发往被压服务，用于与服务端链路对齐）
 
 	// 请求详情
 	URL     string            `json:"url,omitempty"`     // 请求URL

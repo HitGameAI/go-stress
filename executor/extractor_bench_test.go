@@ -158,3 +158,19 @@ func BenchmarkWorkerDepContextReset(b *testing.B) {
 		ctx.reset()
 	}
 }
+
+// benchTraceSink 防止生成结果被编译器消除
+var benchTraceSink string
+
+// BenchmarkTraceGenNext 每请求一次的 trace 标识生成成本
+//
+// 该路径对每个请求都生效，故需确认它不会成为压测工具自身的开销
+func BenchmarkTraceGenNext(b *testing.B) {
+	g := newTraceGen()
+
+	b.ReportAllocs()
+	for b.Loop() {
+		_, tp := g.next()
+		benchTraceSink = tp
+	}
+}

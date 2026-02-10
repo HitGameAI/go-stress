@@ -61,15 +61,22 @@ func (h *HTTPClient) Connect(ctx context.Context) error {
 func (h *HTTPClient) Send(ctx context.Context, req *types.Request) (*types.Response, error) {
 	startTime := time.Now()
 
-	// 使用 go-toolbox 的 httpx 构建请求
-	httpReq := h.client.NewRequest(req.Method, req.URL)
-
-	// 设置超时
+	// 超时与取消都挂在 ctx 上，必须在构建请求之前派生
 	if h.config.Timeout > 0 {
 		var cancel context.CancelFunc
 		ctx, cancel = context.WithTimeout(ctx, h.config.Timeout)
 		defer cancel()
 	}
+
+	// 使用 go-toolbox 的 httpx 构建请求，并把本次请求的 ctx 挂上去
+	//
+	// 原先只调 client.NewRequest(method, url)，它取的是构造客户端时的 ctx，
+	// 而 httpx.NewDefaultHttpClient 用的是 context.Background()：派生出的超时 ctx
+	// 没有任何下游，于是 -timeout 形同虚设（http.DefaultClient 自身也没有 Timeout），
+	// Ctrl-C 与内存阈值停止也无法中断已发出的请求，只能等服务端自己断开
+	//
+	// WithContext 返回的是克隆体而非原对象，返回值必须接住，否则这行等于没写
+	httpReq := h.client.NewRequest(req.Method, req.URL).WithContext(ctx)
 
 	// 设置Headers
 	for k, v := range req.Headers {

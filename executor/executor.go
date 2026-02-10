@@ -117,16 +117,17 @@ func NewExecutor(cfg *config.Config, storageMode StorageMode, storagePath string
 
 	// 直接从 config 取变量解析器
 	e.scheduler = NewScheduler(SchedulerConfig{
-		WorkerCount:      e.config.Concurrency,
-		RequestPerWorker: e.config.Requests,
-		RampUpDuration:   rampUp,
-		ClientPool:       e.pool,
-		Handler:          handler,
-		Collector:        e.collector,
-		APISelector:      apiSelector,
-		VarResolver:      e.config.VarResolver,
-		Controller:       nil, // 稍后设置
-		Logger:           e.logger,
+		WorkerCount:       e.config.Concurrency,
+		RequestPerWorker:  e.config.Requests,
+		RampUpDuration:    rampUp,
+		ClientPool:        e.pool,
+		Handler:           handler,
+		Collector:         e.collector,
+		APISelector:       apiSelector,
+		VarResolver:       e.config.VarResolver,
+		Controller:        nil, // 稍后设置
+		Logger:            e.logger,
+		InjectTraceHeader: e.config.Advanced == nil || !e.config.Advanced.DisableTraceHeader,
 	})
 
 	return e, nil
