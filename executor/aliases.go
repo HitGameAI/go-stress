@@ -43,7 +43,8 @@ type (
 	VerificationResult = types.VerificationResult
 
 	// 配置相关 - 直接使用 config.APIConfig，不再转换
-	APIConfig = config.APIConfig
+	APIConfig    = config.APIConfig
+	VerifyConfig = config.VerifyConfig
 )
 
 // 常量别名

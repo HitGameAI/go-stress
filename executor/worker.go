@@ -321,15 +321,19 @@ func (w *Worker) executeRequestUnified(ctx context.Context, source RequestSource
 	}
 
 	// 验证和错误处理
-	verifySuccess := w.handleVerificationAndErrors(apiCfg, resp, err)
+	//
+	// reqErr 是本次请求最终的失败原因：传输层错误或验证失败。
+	// 它必须传给 BuildRequestResult —— 此前那里只收传输层的 err，于是
+	// 「HTTP 200 但验证不通过」被记为成功，成功率 100% 而断言全红
+	reqErr := w.handleVerificationAndErrors(apiCfg, resp, err)
 
-	// 如果验证失败，依然使用提取的变量（可能为空或默认值）
-	if !verifySuccess && len(extractedVars) > 0 {
+	// 验证失败时提取的变量仍然可用（可能为空或默认值）
+	if reqErr != nil && err == nil && len(extractedVars) > 0 {
 		w.logger.Warnf("⚠️  Worker %d: API [%s] 验证失败，但已提取 %d 个变量（可能为空或默认值）", w.id, apiCfg.Name, len(extractedVars))
 	}
 
 	// 记录结果
-	result := BuildRequestResult(resp, err)
+	result := BuildRequestResult(resp, reqErr)
 	result.ExtractedVars = extractedVars
 	result.APIName = apiCfg.Name
 	result.GroupID = groupID
@@ -368,42 +372,51 @@ func (w *Worker) recordSkippedRequest(apiCfg *APIConfig, groupID uint64) {
 	w.logger.Warnf("⏭️  Worker %d: 跳过 API [%s]，%s", w.id, apiCfg.Name, skipReason)
 }
 
-// handleVerificationAndErrors 处理验证和错误
-func (w *Worker) handleVerificationAndErrors(apiCfg *APIConfig, resp *Response, err error) bool {
-	verifySuccess := true
-
-	// 如果请求本身失败，标记为失败
+// handleVerificationAndErrors 处理验证与错误，返回本次请求最终的失败原因
+//
+// 返回 nil 表示请求成功。返回非 nil 时调用方须据此把结果标记为失败 ——
+// 此前这里返回的是一个 bool，而它同时承担了两件事：「验证是否通过」与
+// 「是否阻断依赖本 API 的后续请求」。两者被 continue_on_failure 搅在一起：
+// 该项为真时 bool 仍是 true，于是「验证失败但不阻断依赖」被当成了「请求成功」
+//
+// 现在拆开：返回值只回答「这次请求算不算失败」，
+// 而是否阻断依赖由 markAPIFailedLocal 单独决定
+func (w *Worker) handleVerificationAndErrors(apiCfg *APIConfig, resp *Response, err error) error {
+	// 请求本身失败
 	if err != nil {
-		verifySuccess = false
 		w.markAPIFailedLocal(apiCfg.Name)
 		w.logger.Errorf("❌ Worker %d: API [%s] 请求失败: %v，后续依赖的API将被跳过", w.id, apiCfg.Name, err)
-		return verifySuccess
+		return err
 	}
 
-	// 如果有API级别的验证配置，执行验证
-	if len(apiCfg.Verify) > 0 && resp != nil {
-		verifyErr := w.executeVerifications(apiCfg, resp)
-		if verifyErr != nil {
-			// 检查是否所有验证都设置了 continue_on_failure
-			allContinueOnFailure := true
-			for _, verify := range apiCfg.Verify {
-				if !verify.ContinueOnFailure {
-					allContinueOnFailure = false
-					break
-				}
-			}
+	if len(apiCfg.Verify) == 0 || resp == nil {
+		return nil
+	}
 
-			if !allContinueOnFailure {
-				verifySuccess = false
-				w.markAPIFailedLocal(apiCfg.Name)
-				w.logger.Errorf("❌ Worker %d: API [%s] 验证失败: %v，后续依赖的API将被跳过", w.id, apiCfg.Name, verifyErr)
-			} else {
-				w.logger.Warnf("⚠️  Worker %d: API [%s] 验证失败: %v，但已设置忽略错误，继续执行后续 API", w.id, apiCfg.Name, verifyErr)
-			}
+	verifyErr := w.executeVerifications(apiCfg, resp)
+	if verifyErr == nil {
+		return nil
+	}
+
+	// continue_on_failure 只决定是否阻断依赖，不决定这条请求算不算失败：
+	// 字段语义是「验证失败时是否继续执行（不阻断后续API）」，与成功率无关
+	if allContinueOnFailure(apiCfg.Verify) {
+		w.logger.Warnf("⚠️  Worker %d: API [%s] %v，已设置忽略错误，不阻断后续 API", w.id, apiCfg.Name, verifyErr)
+	} else {
+		w.markAPIFailedLocal(apiCfg.Name)
+		w.logger.Errorf("❌ Worker %d: API [%s] %v，后续依赖的API将被跳过", w.id, apiCfg.Name, verifyErr)
+	}
+	return verifyErr
+}
+
+// allContinueOnFailure 是否所有验证都允许失败后继续
+func allContinueOnFailure(rules []VerifyConfig) bool {
+	for i := range rules {
+		if !rules[i].ContinueOnFailure {
+			return false
 		}
 	}
-
-	return verifySuccess
+	return true
 }
 
 // executeRequest 执行单次请求（统一方法）
@@ -568,6 +581,9 @@ func (w *Worker) extractorManagerFor(apiCfg *APIConfig) (*ExtractorManager, erro
 
 // executeVerifications 执行API级别的验证
 func (w *Worker) executeVerifications(apiCfg *APIConfig, resp *Response) error {
+	// failed 记录未通过的规则类型
+	var failed []string
+
 	for _, verifyCfg := range apiCfg.Verify {
 		// 复制验证配置，以便修改而不影响原配置
 		verifyConfig := verifyCfg
@@ -605,13 +621,26 @@ func (w *Worker) executeVerifications(apiCfg *APIConfig, resp *Response) error {
 		httpVerifier := verify.NewHTTPVerifier(&verifyConfig)
 
 		// 执行验证
-		isValid, verifyErr := httpVerifier.Verify(resp)
-		if !isValid {
-			if verifyErr != nil {
-				return fmt.Errorf("响应验证失败: %w", verifyErr)
-			}
-			return fmt.Errorf("响应验证失败")
+		//
+		// 不在首个失败处返回：那样后续规则根本不会执行，它们的结果也就不会
+		// 进入 resp.Verifications，报告里的验证条目会比配置声明的少 ——
+		// 使用者会以为那些规则通过了，其实从未跑过
+		if isValid, verifyErr := httpVerifier.Verify(resp); !isValid {
+			failed = append(failed, string(verifyConfig.Type))
+			w.logger.Debugf("Worker %d: API [%s] 验证 %s 未通过: %v",
+				w.id, apiCfg.Name, verifyConfig.Type, verifyErr)
 		}
 	}
-	return nil
+
+	if len(failed) == 0 {
+		return nil
+	}
+
+	// 错误文本只含规则类型，不含实际响应内容
+	//
+	// 统计里的错误表以错误文本为键做聚合：把响应体拼进来会让每个不同的响应
+	// 各占一行，既看不出规律，也让错误表随请求数无界增长。
+	// 逐条的实际值记在 RequestResult.Verifications 里，报告明细可查
+	return fmt.Errorf("验证失败: %s（共 %d/%d 条未通过）",
+		strings.Join(failed, ", "), len(failed), len(apiCfg.Verify))
 }

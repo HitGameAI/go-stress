@@ -23,7 +23,6 @@ import (
 	"github.com/kamalyes/go-stress/protocol"
 	"github.com/kamalyes/go-stress/statistics"
 	"github.com/kamalyes/go-stress/storage"
-	"github.com/kamalyes/go-stress/verify"
 	"github.com/kamalyes/go-toolbox/pkg/breaker"
 	"github.com/kamalyes/go-toolbox/pkg/retry"
 )
@@ -211,16 +210,22 @@ func (e *Executor) buildMiddlewareChain(factory ClientFactory) (RequestHandler, 
 		chain.Use(RetryMiddleware(retrier))
 	}
 
-	// 3. 验证中间件
-	if e.config.Verify != nil && e.config.Verify.Type != "" {
-		verifier, err := verify.Get(VerifyType(e.config.Verify.Type), e.config.Verify)
-		if err != nil {
-			return nil, fmt.Errorf("获取验证器失败: %w", err)
-		}
-		chain.Use(VerifyMiddleware(verifier))
-	}
-
-	// 4. 构建处理器（客户端是最底层）
+	// 3. 构建处理器（客户端是最底层）
+	//
+	// 这里不再装验证中间件：验证统一由 Worker 执行
+	//
+	// 此前两条路径并存，而 DefaultConfig 总会给出一条顶层 verify（STATUS_CODE=200），
+	// 于是 config.Verify 从不为 nil、中间件总被安装；同时 loader 又把这条顶层配置
+	// 复制进每个未自带 verify 的 API，Worker 再跑一遍。结果每个请求被验证两次，
+	// 报告里出现两条一模一样的验证记录 —— 声明 1 条却显示 2 条
+	//
+	// 选 Worker 而非中间件作为唯一入口，是因为只有它拿得到：
+	//   - 每个 API 各自的多条验证规则（中间件只有那一条全局配置）
+	//   - 期望值里的变量替换结果（如 expect: "{{.token}}"）
+	// 单 URL 模式也不会丢验证：CreateAPISelector 会把顶层 verify 带进合成的那个 API
+	//
+	// 代价：验证失败不再触发重试与熔断。这对压测更正确 ——
+	// 因断言不通过而重试会多发请求，报告里的请求数便不再是你要求的那个数
 	handler := chain.Build(ClientMiddleware(client))
 
 	return handler, nil

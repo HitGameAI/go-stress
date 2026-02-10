@@ -267,7 +267,30 @@ func loadConfig(opts RunOptions) (*config.Config, error) {
 		return nil, fmt.Errorf("必须提供配置文件、curl文件或命令行参数")
 	}
 
+	inheritCommonVerify(cfg)
+
 	return cfg, nil
+}
+
+// inheritCommonVerify 把顶层公共验证下发给未自带验证的 API
+//
+// 这一步必须放在 loadConfig 的出口 —— 它是四条配置来源（配置文件、curl、
+// .jmx、命令行）唯一的汇合点
+//
+// 此前它只在配置文件加载器的 processConfig 里，另外三条路径都绕过了它。
+// 当时靠验证中间件兜住：DefaultConfig 总给一条顶层 verify，中间件便总会安装。
+// 而中间件已被移除（它与 Worker 重复执行验证），若不把继承挪到这里，
+// 经 .jmx 或命令行构造出的、未声明断言的 API 会完全不做验证 ——
+// HTTP 500 会被记成成功
+func inheritCommonVerify(cfg *config.Config) {
+	if cfg == nil || cfg.Verify == nil || cfg.Verify.Type == "" {
+		return
+	}
+	for i := range cfg.APIs {
+		if len(cfg.APIs[i].Verify) == 0 {
+			cfg.APIs[i].Verify = []config.VerifyConfig{*cfg.Verify}
+		}
+	}
 }
 
 // validateConfig 验证配置

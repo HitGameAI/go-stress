@@ -151,10 +151,8 @@ func (l *Loader) mergeAPIsWithCommon(config *Config) error {
 		// 合并Headers（公共headers + API特定headers，API的优先）
 		api.Headers = mergeHeaders(config.Headers, api.Headers)
 
-		// 继承Verify配置
-		if len(api.Verify) == 0 {
-			api.Verify = []VerifyConfig{*config.Verify}
-		}
+		// 公共 Verify 的下发统一由 executor.inheritCommonVerify 负责
+		// （那里是全部配置来源的汇合点），此处不再重复
 
 		// 设置默认权重
 		api.Weight = mathx.IfNotZero(api.Weight, 1)
