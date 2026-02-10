@@ -22,6 +22,9 @@ import (
 	"github.com/kamalyes/go-stress/config"
 )
 
+// defaultWebSocketTimeout 未配置超时时的兜底读写上限
+const defaultWebSocketTimeout = 30 * time.Second
+
 // WebSocketClient WebSocket 客户端
 type WebSocketClient struct {
 	config  *config.Config
@@ -63,8 +66,19 @@ func NewWebSocketClient(cfg *config.Config) (Client, error) {
 		headers.Set(k, v)
 	}
 
+	// cfg.Timeout 本身已是 time.Duration（纳秒），不能再乘时间单位
+	//
+	// 原先写的是 time.Duration(cfg.Timeout) * time.Second，等于把纳秒数又乘了 1e9：
+	//   -timeout 2s  → 握手超时 63 年（等于没有超时）
+	//   -timeout 30s → 溢出 int64 变成负数，握手截止时间落在过去，
+	//                  于是拨号立即失败。而 30s 正是默认值，
+	//                  也就是说默认配置下 WebSocket 压测根本连不上
+	handshake := cfg.Timeout
+	if handshake <= 0 {
+		handshake = defaultWebSocketTimeout
+	}
 	dialer := &websocket.Dialer{
-		HandshakeTimeout: time.Duration(cfg.Timeout) * time.Second,
+		HandshakeTimeout: handshake,
 		Proxy:            http.ProxyFromEnvironment,
 	}
 
@@ -126,25 +140,43 @@ func (c *WebSocketClient) Send(ctx context.Context, req *Request) (*Response, er
 		}
 	}
 
+	// 读写都必须设截止时间
+	//
+	// gorilla/websocket 的 WriteMessage / ReadMessage 不接受 ctx，只认连接上的
+	// deadline。不设的话，服务端接受了连接却不回复时 ReadMessage 会永久阻塞——
+	// 而整个 Send 全程持有 c.mu，那个 Worker 就彻底卡死，-timeout 对 WebSocket
+	// 形同虚设（与此前 HTTP 那条路径同类的问题）
+	//
+	// 注意这是「上界」而非「即时取消」：ctx 被取消时已发出的读仍会等到截止时间。
+	// 要做到即时取消得在另一个 goroutine 里关掉连接，而那意味着每个请求多一个
+	// goroutine，对热路径不划算
+	deadline := c.deadline(ctx)
+	if err := c.conn.SetWriteDeadline(deadline); err != nil {
+		c.dropConn()
+		return nil, fmt.Errorf("websocket set write deadline failed: %w", err)
+	}
+	if err := c.conn.SetReadDeadline(deadline); err != nil {
+		c.dropConn()
+		return nil, fmt.Errorf("websocket set read deadline failed: %w", err)
+	}
+
 	if err := c.conn.WriteMessage(messageType, []byte(req.Body)); err != nil {
 		// 连接断开,关闭并返回错误
-		if c.conn != nil {
-			c.conn.Close()
-			c.conn = nil
-		}
+		c.dropConn()
 		return nil, fmt.Errorf("websocket write failed: %w", err)
 	}
 
 	// 接收响应
 	_, respBody, err := c.conn.ReadMessage()
 	if err != nil {
-		// 检查是否为正常关闭或异常关闭
-		if websocket.IsCloseError(err, websocket.CloseNormalClosure, websocket.CloseGoingAway, websocket.CloseAbnormalClosure) {
-			// WebSocket 连接已关闭，这是正常情况（特别是在长连接测试中）
-			if c.conn != nil {
-				c.conn.Close()
-				c.conn = nil
-			}
+		// 只有优雅关闭才算正常：1000 NormalClosure、1001 GoingAway 都是对端
+		// 按协议发了关闭帧。而 1006 AbnormalClosure 表示连接没有关闭帧就断了
+		// （对端崩溃、中间设备掐断），那是故障而非正常收尾
+		//
+		// 此前把 1006 一并算作成功并返回 200，于是服务端压测中途崩掉时
+		// 报告仍显示 100% 成功——这类失真比报错危险得多
+		if websocket.IsCloseError(err, websocket.CloseNormalClosure, websocket.CloseGoingAway) {
+			c.dropConn()
 
 			duration := time.Since(startTime)
 			headers := make(map[string]string)
@@ -166,11 +198,8 @@ func (c *WebSocketClient) Send(ctx context.Context, req *Request) (*Response, er
 			}, nil
 		}
 
-		// 其他错误才视为失败
-		if c.conn != nil {
-			c.conn.Close()
-			c.conn = nil
-		}
+		// 其他错误（含 1006 异常关闭、读超时）一律视为失败
+		c.dropConn()
 		return nil, fmt.Errorf("websocket read failed: %w", err)
 	}
 
@@ -196,6 +225,32 @@ func (c *WebSocketClient) Send(ctx context.Context, req *Request) (*Response, er
 	}
 
 	return response, nil
+}
+
+// deadline 计算本次读写的截止时间
+//
+// 取 ctx 的截止时间与配置超时中较早的那个；两者都没有时退回一个保守的兜底值，
+// 以保证任何情况下都不会无限等待
+func (c *WebSocketClient) deadline(ctx context.Context) time.Time {
+	timeout := c.config.Timeout
+	if timeout <= 0 {
+		timeout = defaultWebSocketTimeout
+	}
+	d := time.Now().Add(timeout)
+
+	if ctxDeadline, ok := ctx.Deadline(); ok && ctxDeadline.Before(d) {
+		return ctxDeadline
+	}
+	return d
+}
+
+// dropConn 关闭并丢弃当前连接，下次 Send 会重新拨号
+// 调用方必须已持有 c.mu
+func (c *WebSocketClient) dropConn() {
+	if c.conn != nil {
+		c.conn.Close()
+		c.conn = nil
+	}
 }
 
 // Type 返回协议类型

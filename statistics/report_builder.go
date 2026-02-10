@@ -14,7 +14,6 @@ import (
 	"time"
 
 	"github.com/kamalyes/go-toolbox/pkg/mathx"
-	"github.com/kamalyes/go-toolbox/pkg/syncx"
 )
 
 // ReportBuilder 报告构建器 - 负责从 Collector 提取和计算数据
@@ -41,46 +40,36 @@ func (rb *ReportBuilder) BuildReport(totalTime time.Duration, includeDetails boo
 	errors := c.errors.ToMap()
 	statusCodes := c.statusCodes.ToMap()
 
-	// 第三步：读取时长数据（需要锁，但使用深拷贝快速复制）
-	report := syncx.WithRLockReturnValue(c.mu, func() *Report {
-		var durationsCopy []float64
-
-		// 使用 syncx.DeepCopy 深拷贝切片
-		if err := syncx.DeepCopy(&durationsCopy, &c.durations); err == nil {
-			// 深拷贝成功
-		} else {
-			// 降级为手动复制
-			durationsCopy = make([]float64, len(c.durations))
-			copy(durationsCopy, c.durations)
-		}
-
-		// 在锁内快速构建报告
-		return &Report{
-			TotalRequests:   totalReqs,
-			SuccessRequests: successReqs,
-			FailedRequests:  failedReqs,
-			SkippedRequests: skippedReqs,
-			TotalTime:       totalTime,
-			MinLatency:      c.minDuration,
-			MaxLatency:      c.maxDuration,
-			TotalSize:       c.totalSize,
-			Errors:          errors,
-			StatusCodes:     statusCodes,
-			RequestDetails:  nil,       // 详情数据从SQLite按需加载
-			RunMode:         c.runMode, // 传递运行模式
-			Protocol:        c.protocol,
-			Concurrency:     c.concurrency,
-			TotalReqs:       c.totalReqs,
-			logger:          c.logger,
-		}
-	})
+	// 第三步：构建报告
+	//
+	// 这里原先要在读锁内把整个 durations 切片深拷贝一份。实时报告每秒构建一次，
+	// 一千万请求时等于每秒反射拷贝 80MB，还要在随后的百分位计算里再排一次序。
+	// 改用直方图后时长统计全是定长读取，锁与拷贝一并消失
+	report := &Report{
+		TotalRequests:   totalReqs,
+		SuccessRequests: successReqs,
+		FailedRequests:  failedReqs,
+		SkippedRequests: skippedReqs,
+		TotalTime:       totalTime,
+		MinLatency:      c.MinLatency(),
+		MaxLatency:      c.MaxLatency(),
+		TotalSize:       float64(c.totalSizeBytes.Load()),
+		Errors:          errors,
+		StatusCodes:     statusCodes,
+		RequestDetails:  nil,       // 详情数据从SQLite按需加载
+		RunMode:         c.runMode, // 传递运行模式
+		Protocol:        c.protocol,
+		Concurrency:     c.concurrency,
+		TotalReqs:       c.totalReqs,
+		logger:          c.logger,
+	}
 
 	// 第三步：如果需要详情数据，从存储加载
 	if includeDetails {
 		report.RequestDetails = c.GetRequestDetails(0, 10000000, StatusFilterAll, "", "") // 最多取1000万条
 	}
 
-	// 第四步：在锁外计算统计数据
+	// 第四步：计算统计数据
 	rb.calculateStats(report, totalReqs, totalTime)
 
 	return report
@@ -94,17 +83,17 @@ func (rb *ReportBuilder) calculateStats(report *Report, totalReqs uint64, totalT
 
 	// 计算基础统计
 	report.SuccessRate = mathx.Percentage(report.SuccessRequests, totalReqs)
-	report.AvgLatency = rb.collector.totalDuration / time.Duration(totalReqs)
+	report.AvgLatency = time.Duration(rb.collector.totalDurationNanos.Load() / int64(totalReqs))
 	report.QPS = float64(totalReqs) / totalTime.Seconds()
 
 	// 计算百分位
-	if len(rb.collector.durations) > 0 {
-		percentiles := mathx.Percentiles(rb.collector.durations, 50, 90, 95, 99)
-		report.P50Latency = time.Duration(percentiles[50] * float64(time.Second))
-		report.P90Latency = time.Duration(percentiles[90] * float64(time.Second))
-		report.P95Latency = time.Duration(percentiles[95] * float64(time.Second))
-		report.P99Latency = time.Duration(percentiles[99] * float64(time.Second))
-	}
+	//
+	// 此前这里直接读 collector.durations 却没有持锁，与 Collect 的 append 构成
+	// 数据竞争（-race 在实时报告期间可稳定复现）。直方图各桶自身是原子读写，
+	// 不再需要外部同步
+	p := rb.collector.latency.Percentiles(50, 90, 95, 99)
+	report.P50Latency, report.P90Latency = p[0], p[1]
+	report.P95Latency, report.P99Latency = p[2], p[3]
 }
 
 // BuildSummary 构建摘要（不包含明细，最快）
@@ -160,24 +149,15 @@ func (rb *ReportBuilder) BuildRealtimeReport(startTime time.Time, endTime time.T
 
 	// 获取最近20个响应时间用于实时图表
 	c := rb.collector
-	report.RecentDurations = syncx.WithRLockReturnValue(c.mu, func() []int64 {
-		durationsLen := len(c.durations)
-		if durationsLen == 0 {
-			return nil
+	// 走势图只要最后若干个点，由定长环形缓冲提供，不再为这 20 个数字
+	// 留着上千万条记录
+	recent := c.recent.snapshot()
+	if len(recent) > 0 {
+		report.RecentDurations = make([]int64, 0, len(recent))
+		for _, d := range recent {
+			report.RecentDurations = append(report.RecentDurations, d.Milliseconds())
 		}
-
-		start := 0
-		if durationsLen > 20 {
-			start = durationsLen - 20
-		}
-
-		recent := make([]int64, 0, durationsLen-start)
-		for i := start; i < durationsLen; i++ {
-			// durations 是 float64 (秒)，转换为毫秒
-			recent = append(recent, int64(c.durations[i]*1000))
-		}
-		return recent
-	})
+	}
 
 	return report
 }

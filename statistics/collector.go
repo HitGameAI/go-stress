@@ -11,11 +11,12 @@
 package statistics
 
 import (
+	"math"
+	"sync/atomic"
 	"time"
 
 	"github.com/kamalyes/go-logger"
 	"github.com/kamalyes/go-toolbox/pkg/idgen"
-	"github.com/kamalyes/go-toolbox/pkg/mathx"
 	"github.com/kamalyes/go-toolbox/pkg/syncx"
 )
 
@@ -27,14 +28,20 @@ type Collector struct {
 	failedRequests  *syncx.Uint64
 	skippedRequests *syncx.Uint64 // 跳过请求计数器
 
-	// 时长统计（需要加锁）
-	mu            *syncx.RWLock
-	totalDuration time.Duration
-	minDuration   time.Duration
-	maxDuration   time.Duration
-	durations     []float64 // 用于计算百分位（转为秒）
+	// 时长与流量统计
+	//
+	// 全部改为原子类型，使 Collect 整条路径无锁：此前这些字段由一把写锁保护，
+	// 而每个请求都要抢它一次，那是全工具唯一的串行点
+	totalDurationNanos atomic.Int64  // 耗时总和（纳秒）
+	minDurationNanos   atomic.Int64  // 最小耗时（纳秒），初值为 int64 上限
+	maxDurationNanos   atomic.Int64  // 最大耗时（纳秒）
+	totalSizeBytes     atomic.Uint64 // 响应字节总和
 
-	totalSize float64
+	// latency 延迟分布，取代原先逐条追加的 []float64（见 LatencyHistogram 的说明）
+	latency *LatencyHistogram
+
+	// recent 最近若干次耗时，供实时图表画走势
+	recent *recentDurations
 
 	// 使用 syncx.Map 替换 map + mutex
 	errors      *syncx.Map[string, uint64]
@@ -67,22 +74,25 @@ type Collector struct {
 
 // NewCollector 使用存储和日志器创建收集器
 func NewCollector(strg StorageInterface, log logger.ILogger) *Collector {
-	return &Collector{
+	c := &Collector{
 		totalRequests:   syncx.NewUint64(0),
 		successRequests: syncx.NewUint64(0),
 		failedRequests:  syncx.NewUint64(0),
 		skippedRequests: syncx.NewUint64(0),
-		mu:              syncx.NewRWLock(),
 		reporterMu:      syncx.NewRWLock(),
-		durations:       make([]float64, 0, 10000),
+		latency:         NewLatencyHistogram(),
+		recent:          newRecentDurations(),
 		errors:          syncx.NewMap[string, uint64](),
 		statusCodes:     syncx.NewMap[int, uint64](),
 		storage:         strg,
 		idGenerator:     idgen.NewSnowflakeGenerator(1, 1),
-		minDuration:     time.Hour,
 		closed:          syncx.NewBool(false),
 		logger:          log,
 	}
+	// 最小值从 int64 上限开始，任何真实耗时都能把它压下来；
+	// 原先用 time.Hour 作初值，一旦所有请求都慢于 1 小时就会报出错误的最小值
+	c.minDurationNanos.Store(math.MaxInt64)
+	return c
 }
 
 // Collect 收集单次请求结果
@@ -123,16 +133,17 @@ func (c *Collector) Collect(result *RequestResult) {
 		incrementCounter(c.statusCodes, result.StatusCode)
 	}
 
-	// 统计耗时 - 使用 syncx.WithLock 包装
-	syncx.WithLock(c.mu, func() {
-		c.totalDuration += result.Duration
-		c.durations = append(c.durations, result.Duration.Seconds())
-
-		c.minDuration = mathx.Min(c.minDuration, result.Duration)
-		c.maxDuration = mathx.Max(c.maxDuration, result.Duration)
-
-		c.totalSize += result.Size
-	})
+	// 统计耗时与流量 - 全程原子操作，无锁
+	nanos := result.Duration.Nanoseconds()
+	c.totalDurationNanos.Add(nanos)
+	c.latency.Record(result.Duration)
+	c.recent.record(result.Duration)
+	storeMin(&c.minDurationNanos, nanos)
+	storeMax(&c.maxDurationNanos, nanos)
+	// Size 实际来自 len(resp.Body)，恒为整数字节数，故按 uint64 累加不损失精度
+	if result.Size > 0 {
+		c.totalSizeBytes.Add(uint64(result.Size))
+	}
 
 	// 生成唯一ID和错误消息
 	result.ID = c.idGenerator.GenerateRequestID()
@@ -176,25 +187,59 @@ func (c *Collector) GetMetrics() *Metrics {
 
 // GetSnapshot 获取统计快照
 func (c *Collector) GetSnapshot() *Snapshot {
-	c.mu.RLock()
-	defer c.mu.RUnlock()
-
 	totalReqs := c.totalRequests.Load()
 
 	snapshot := &Snapshot{
 		TotalRequests:   totalReqs,
 		SuccessRequests: c.successRequests.Load(),
 		FailedRequests:  c.failedRequests.Load(),
-		MinLatency:      c.minDuration,
-		MaxLatency:      c.maxDuration,
-		TotalSize:       c.totalSize,
+		MinLatency:      c.MinLatency(),
+		MaxLatency:      c.MaxLatency(),
+		TotalSize:       float64(c.totalSizeBytes.Load()),
 	}
 
 	if totalReqs > 0 {
-		snapshot.AvgLatency = c.totalDuration / time.Duration(totalReqs)
+		snapshot.AvgLatency = time.Duration(c.totalDurationNanos.Load() / int64(totalReqs))
 	}
 
 	return snapshot
+}
+
+// MinLatency 返回最小耗时，无样本时为 0
+func (c *Collector) MinLatency() time.Duration {
+	v := c.minDurationNanos.Load()
+	if v == math.MaxInt64 {
+		return 0
+	}
+	return time.Duration(v)
+}
+
+// MaxLatency 返回最大耗时
+func (c *Collector) MaxLatency() time.Duration {
+	return time.Duration(c.maxDurationNanos.Load())
+}
+
+// storeMin 以 CAS 重试把 v 写入 dst（仅当更小）
+//
+// 不能写成「读-比较-写」三步：两个 goroutine 同时读到同一旧值时，
+// 后写的会覆盖先写的，最小值被吞
+func storeMin(dst *atomic.Int64, v int64) {
+	for {
+		old := dst.Load()
+		if v >= old || dst.CompareAndSwap(old, v) {
+			return
+		}
+	}
+}
+
+// storeMax 以 CAS 重试把 v 写入 dst（仅当更大）
+func storeMax(dst *atomic.Int64, v int64) {
+	for {
+		old := dst.Load()
+		if v <= old || dst.CompareAndSwap(old, v) {
+			return
+		}
+	}
 }
 
 // GetStatusCodes 获取状态码统计

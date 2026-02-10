@@ -244,12 +244,12 @@ func (s *BadgerStorage) writeBatch(batch []*RequestResult) error {
 // makeKey 生成存储键
 // 格式: req:{nodeID}:{taskID}:{timestamp}:{id}
 func (s *BadgerStorage) makeKey(detail *RequestResult) []byte {
-	return []byte(fmt.Sprintf("req:%s:%s:%d:%s",
+	return fmt.Appendf(nil, "req:%s:%s:%d:%s",
 		detail.NodeID,
 		detail.TaskID,
 		detail.Timestamp.Unix(),
 		detail.ID,
-	))
+	)
 }
 
 // Query 分页查询请求详情
