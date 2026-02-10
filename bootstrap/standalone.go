@@ -22,6 +22,8 @@ import (
 type StandaloneOptions struct {
 	ConfigFile   string
 	CurlFile     string
+	JMXFile      string // JMeter .jmx 脚本路径
+	JMXLossy     bool   // 允许 .jmx 中存在会改变负载的丢失项
 	Concurrency  uint64
 	Requests     uint64
 	Timeout      time.Duration
@@ -42,6 +44,8 @@ func RunStandalone(opts StandaloneOptions) error {
 	result := executor.RunTask(executor.RunOptions{
 		ConfigFile:    opts.ConfigFile,
 		CurlFile:      opts.CurlFile,
+		JMXFile:       opts.JMXFile,
+		JMXLossy:      opts.JMXLossy,
 		Concurrency:   opts.Concurrency,
 		Requests:      opts.Requests,
 		Timeout:       opts.Timeout,

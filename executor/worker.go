@@ -64,6 +64,13 @@ type Worker struct {
 	trace             *traceGen
 	injectTraceHeader bool
 
+	// think 思考时间的等待器；thinkTime 为全局默认，可被 APIConfig.ThinkTime 覆盖
+	think     *thinkTimer
+	thinkTime *config.ThinkTimeConfig
+
+	// csv CSV 数据源的本地取数游标，未配置数据源时为 nil
+	csv *csvCursor
+
 	// extractorCache 按 API 名缓存提取器管理器
 	//
 	// NewExtractorManager 的构造成本很高：内部 NewVariableResolver 要建一张近百项的
@@ -88,6 +95,9 @@ type WorkerConfig struct {
 	Logger      logger.ILogger
 
 	InjectTraceHeader bool // 是否向请求注入 traceparent 头
+
+	ThinkTime *config.ThinkTimeConfig // 全局思考时间（可选）
+	CSVSource *CSVSource              // CSV 数据源（可选，全部 Worker 共享）
 }
 
 // NewWorker 创建Worker
@@ -111,6 +121,10 @@ func NewWorker(cfg WorkerConfig, varResolver *config.VariableResolver) *Worker {
 
 		trace:             newTraceGen(),
 		injectTraceHeader: cfg.InjectTraceHeader,
+
+		think:     newThinkTimer(),
+		thinkTime: cfg.ThinkTime.Normalize(),
+		csv:       newCSVCursor(cfg.CSVSource),
 
 		extractorCache: make(map[string]*ExtractorManager),
 	}
@@ -154,6 +168,16 @@ func (w *Worker) Run(ctx context.Context) error {
 		// 每次新的请求序列，重置本地依赖上下文（原地清空，不重新分配）
 		w.depContext.reset()
 
+		// 取一行 CSV 数据注入变量表
+		//
+		// 按「请求序列」而非「单个请求」推进，与 JMeter 的 CSVDataSet 一致：
+		// 一行数据代表一个虚拟用户的身份，登录→下单这条依赖链理应共用同一行
+		if !w.csv.injectInto(w.depContext.extractedVars) {
+			// 数据用尽且配置了不回绕：JMeter 此时停止该线程，这里同样结束本 Worker
+			w.logger.InfoKV("CSV 数据已取完，Worker 结束", "worker_id", w.id, "completed", i)
+			return nil
+		}
+
 		// 计算分组ID（(Worker ID + 1) * 100000 + 请求序号，确保全局唯一）
 		groupID := (w.id+1)*100000 + i + 1
 
@@ -191,15 +215,32 @@ func (w *Worker) Run(ctx context.Context) error {
 
 					// 直接按顺序执行指定的 API
 					w.executeRequestByName(ctx, apiName, resolver, currentGroupID)
+
+					// 思考时间：API 级配置优先，否则取全局
+					if !w.think.wait(ctx, w.thinkTimeFor(api)) {
+						return ctx.Err()
+					}
 				}
 			}
 		} else {
 			// 单API模式或其他模式，执行一次
 			w.executeRequest(ctx)
+
+			if !w.think.wait(ctx, w.thinkTime) {
+				return ctx.Err()
+			}
 		}
 	}
 
 	return nil
+}
+
+// thinkTimeFor 返回该 API 应使用的思考时间：API 级配置优先，未配置则取全局
+func (w *Worker) thinkTimeFor(api *APIConfig) *config.ThinkTimeConfig {
+	if api != nil && !api.ThinkTime.IsZero() {
+		return api.ThinkTime.Normalize()
+	}
+	return w.thinkTime
 }
 
 // checkControlState 检查控制状态（停止/暂停）返回 true 表示应该退出

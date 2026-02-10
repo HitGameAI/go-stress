@@ -32,6 +32,8 @@ type RunOptions struct {
 	// === 配置来源（三选一） ===
 	ConfigFile string                // 配置文件路径
 	CurlFile   string                // curl 文件路径
+	JMXFile    string                // JMeter .jmx 脚本路径
+	JMXLossy   bool                  // 允许 .jmx 中存在会改变负载的丢失项
 	ConfigFunc func() *config.Config // 从命令行构建配置的函数
 
 	// === 运行时参数 ===
@@ -159,13 +161,66 @@ func RunTask(opts RunOptions) *RunResult {
 	return result
 }
 
+// applyOverrides 用命令行参数覆盖文件/脚本里的配置
+//
+// 只有非零值才覆盖，而「非零」由调用方负责保证只在用户显式指定时成立：
+// -c / -n / -timeout 的默认值分别是 1 / 1 / 30s，若把默认值一路传进来，
+// 脚本里写的并发 50 会被静默改成 1，跑出来的根本不是脚本描述的那个测试
+func applyOverrides(cfg *config.Config, opts RunOptions) {
+	if opts.Concurrency > 0 {
+		cfg.Concurrency = opts.Concurrency
+	}
+	if opts.Requests > 0 {
+		cfg.Requests = opts.Requests
+	}
+	if opts.Timeout > 0 {
+		cfg.Timeout = opts.Timeout
+	}
+}
+
+// printJMXReport 按严重程度分级输出转换报告
+//
+// 走日志而非 fmt：这份内容在 -quiet 下也该让 FATAL/WARN 可见，
+// 且需要与压测过程的其余输出保持同一时间线
+func printJMXReport(report *config.JMXReport, log logger.ILogger) {
+	if report == nil {
+		return
+	}
+	for _, m := range report.Mapped {
+		log.Info("  ✓ %s", m)
+	}
+	for _, d := range report.Drops {
+		switch d.Severity {
+		case config.JMXDropFatal:
+			log.ErrorKV("✗ 无法导入且会改变施加的负载",
+				"element", d.Element, "name", d.Name, "reason", d.Reason)
+		case config.JMXDropWarn:
+			log.WarnKV("✗ 未能完整导入",
+				"element", d.Element, "name", d.Name, "reason", d.Reason)
+		default:
+			log.DebugKV("- 已忽略", "element", d.Element, "name", d.Name, "reason", d.Reason)
+		}
+	}
+}
+
 // loadConfig 加载配置
 func loadConfig(opts RunOptions) (*config.Config, error) {
 	var cfg *config.Config
 	var err error
 
-	// 从curl文件加载
-	if opts.CurlFile != "" {
+	// 从 JMeter 脚本加载
+	if opts.JMXFile != "" {
+		opts.Logger.InfoKV("📄 解析 JMeter 脚本", "file", opts.JMXFile)
+		jmxCfg, report, jmxErr := config.LoadJMeterPlan(opts.JMXFile, opts.JMXLossy)
+		// 报告无论成败都要完整呈现：没搬过来的东西必须让人看见
+		printJMXReport(report, opts.Logger)
+		if jmxErr != nil {
+			return nil, jmxErr
+		}
+		cfg = jmxCfg
+		// 显式指定的命令行参数覆盖脚本配置，便于用同一脚本调整压力
+		applyOverrides(cfg, opts)
+	} else if opts.CurlFile != "" {
 		opts.Logger.InfoKV("📄 解析curl文件", "file", opts.CurlFile)
 		data, err := os.ReadFile(opts.CurlFile)
 		if err != nil {
@@ -175,24 +230,19 @@ func loadConfig(opts RunOptions) (*config.Config, error) {
 		if err != nil {
 			return nil, fmt.Errorf("解析curl文件失败: %w", err)
 		}
-		// 命令行参数覆盖
-		if opts.Concurrency > 0 {
-			cfg.Concurrency = opts.Concurrency
-		}
-		if opts.Requests > 0 {
-			cfg.Requests = opts.Requests
-		}
-		if opts.Timeout > 0 {
-			cfg.Timeout = opts.Timeout
-		}
+		// 显式指定的命令行参数覆盖 curl 文件解析出的配置
+		applyOverrides(cfg, opts)
 	} else if opts.ConfigFile != "" {
 		// 从配置文件加载
 		opts.Logger.InfoKV("📄 加载配置文件", "file", opts.ConfigFile)
-		loader := config.NewLoader()
+		loader := config.NewLoader().WithLogger(opts.Logger)
 		cfg, err = loader.LoadFromFile(opts.ConfigFile)
 		if err != nil {
 			return nil, fmt.Errorf("加载配置文件失败: %w", err)
 		}
+		// 与 curl / jmx 两条路径保持一致：显式指定的命令行参数覆盖文件配置
+		// 此前这条路径完全忽略 -c / -n / -timeout，同一个 yaml 无法临时调整压力
+		applyOverrides(cfg, opts)
 	} else if opts.ConfigFunc != nil {
 		// 使用命令行参数
 		cfg = opts.ConfigFunc()

@@ -20,6 +20,7 @@ import (
 	"github.com/kamalyes/go-stress/config"
 	"github.com/kamalyes/go-stress/logger"
 	"github.com/kamalyes/go-stress/types"
+	"gopkg.in/yaml.v3"
 )
 
 // 导出常量 - 存储模式
@@ -48,6 +49,9 @@ var (
 	// 基础参数
 	configFile  string
 	curlFile    string
+	jmxFile     string // JMeter .jmx 脚本路径
+	jmxDump     string // 把转换结果导出为 go-stress 原生 YAML 的路径
+	jmxLossy    bool   // 允许 .jmx 中存在会改变负载的丢失项
 	protocol    string
 	concurrency uint64
 	requests    uint64
@@ -129,6 +133,9 @@ func init() {
 	// 基础参数
 	flag.StringVar(&configFile, "config", "", "配置文件路径 (yaml/json)")
 	flag.StringVar(&curlFile, "curl", "", "curl命令文件路径")
+	flag.StringVar(&jmxFile, "jmx", "", "JMeter 脚本路径 (.jmx)")
+	flag.StringVar(&jmxDump, "jmx-dump", "", "把 .jmx 转换为 go-stress 原生 YAML 并写入该路径（只转换不压测）")
+	flag.BoolVar(&jmxLossy, "jmx-allow-lossy", false, "即使 .jmx 中存在会改变施加负载的元素也继续导入")
 	flag.StringVar(&protocol, "protocol", "http", "协议类型 (http/grpc/websocket)")
 	flag.Uint64Var(&concurrency, "c", 1, "并发数")
 	flag.Uint64Var(&requests, "n", 1, "每个并发的请求数")
@@ -234,6 +241,15 @@ func run() {
 	// 打印banner
 	printBanner()
 
+	// -jmx-dump 只做转换不压测：导出是一次性的配置迁移动作，
+	// 与真正发压混在一条命令里容易误触
+	if jmxDump != "" {
+		if err := dumpJMeterPlan(); err != nil {
+			logger.Default.Fatalf("❌ 转换 JMeter 脚本失败: %v", err)
+		}
+		return
+	}
+
 	// 根据运行模式选择执行路径
 	switch mode {
 	case ExportRunModeMaster:
@@ -311,6 +327,80 @@ func initLogger() {
 		log = log.WithOutput(logger.NewRotateWriter(logFile, 0, 0))
 	}
 	logger.SetDefault(log)
+}
+
+// flagExplicitlySet 判断某个命令行标志是否被用户显式指定过
+//
+// -c / -n / -timeout 都有非零默认值（1 / 1 / 30s），无法靠「值 > 0」区分
+// 「用户要求并发 1」与「用户没提并发」。而 -jmx / -curl / -config 自带这些参数，
+// 把默认值当覆盖会把脚本里的并发 50 悄悄改成 1，压测结果完全不是脚本描述的那回事
+// flag.Visit 只遍历显式设置过的标志，正是用来做这个区分的
+func flagExplicitlySet(name string) bool {
+	found := false
+	flag.Visit(func(f *flag.Flag) {
+		if f.Name == name {
+			found = true
+		}
+	})
+	return found
+}
+
+// overrideConcurrency 返回用于覆盖文件配置的并发数，未显式指定时返回 0
+func overrideConcurrency() uint64 {
+	if flagExplicitlySet("c") {
+		return concurrency
+	}
+	return 0
+}
+
+// overrideRequests 返回用于覆盖文件配置的请求数，未显式指定时返回 0
+func overrideRequests() uint64 {
+	if flagExplicitlySet("n") {
+		return requests
+	}
+	return 0
+}
+
+// overrideTimeout 返回用于覆盖文件配置的超时，未显式指定时返回 0
+func overrideTimeout() time.Duration {
+	if flagExplicitlySet("timeout") {
+		return timeout
+	}
+	return 0
+}
+
+// dumpJMeterPlan 把 .jmx 转换为 go-stress 原生 YAML 写到 jmxDump
+//
+// 导出的价值不只是省去手写：它让转换结果可读、可审、可改、可纳入版本管理。
+// 排查「为什么 JMeter 和 go-stress 的数字不一样」时，第一步就是看这份 YAML
+func dumpJMeterPlan() error {
+	if jmxFile == "" {
+		return fmt.Errorf("-jmx-dump 需要同时用 -jmx 指定源脚本")
+	}
+
+	cfg, report, err := config.LoadJMeterPlan(jmxFile, jmxLossy)
+	// 报告先打，无论转换成功与否
+	if report != nil {
+		fmt.Println()
+		fmt.Print(report)
+	}
+	if err != nil {
+		return err
+	}
+
+	data, err := yaml.Marshal(cfg)
+	if err != nil {
+		return fmt.Errorf("序列化配置失败: %w", err)
+	}
+
+	header := fmt.Sprintf("# 由 go-stress 从 JMeter 脚本转换而来: %s\n"+
+		"# 转换是有损的，务必对照上面的转换报告确认差异后再用于压测\n", jmxFile)
+	if err := os.WriteFile(jmxDump, append([]byte(header), data...), 0o644); err != nil {
+		return fmt.Errorf("写入 %s 失败: %w", jmxDump, err)
+	}
+
+	fmt.Printf("\n✅ 已导出 go-stress 配置: %s\n", jmxDump)
+	return nil
 }
 
 // parseHeader 解析请求头字符串
@@ -701,16 +791,20 @@ func runSlaveMode() {
 // runStandaloneMode 运行独立模式
 func runStandaloneMode() {
 	opts := bootstrap.StandaloneOptions{
-		ConfigFile:   configFile,
-		CurlFile:     curlFile,
-		Concurrency:  concurrency,
-		Requests:     requests,
-		Timeout:      timeout,
+		ConfigFile: configFile,
+		CurlFile:   curlFile,
+		// 这三项只在用户显式指定时才有值，用于覆盖文件/脚本里的同名配置；
+		// 传默认值会把脚本里的并发悄悄改掉，详见 flagExplicitlySet
+		Concurrency:  overrideConcurrency(),
+		Requests:     overrideRequests(),
+		Timeout:      overrideTimeout(),
 		StorageMode:  storageMode,
 		ReportPrefix: reportPrefix,
 		MaxMemory:    maxMemory,
 		Logger:       logger.Default,
 		ConfigFunc:   buildConfigFromFlags,
+		JMXFile:      jmxFile,
+		JMXLossy:     jmxLossy,
 		NoReport:     noReport,
 		NoPrint:      noPrint,
 		NoWait:       noWait,

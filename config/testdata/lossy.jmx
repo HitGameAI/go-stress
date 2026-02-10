@@ -1,0 +1,39 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<jmeterTestPlan version="1.2" properties="5.0" jmeter="5.6.3">
+  <hashTree>
+    <TestPlan testclass="TestPlan" testname="限速压测" enabled="true"/>
+    <hashTree>
+      <ThreadGroup testclass="ThreadGroup" testname="组A" enabled="true">
+        <stringProp name="ThreadGroup.num_threads">20</stringProp>
+        <stringProp name="ThreadGroup.ramp_time">5</stringProp>
+        <elementProp name="ThreadGroup.main_controller" elementType="LoopController">
+          <boolProp name="LoopController.continue_forever">false</boolProp>
+          <stringProp name="LoopController.loops">100</stringProp>
+        </elementProp>
+      </ThreadGroup>
+      <hashTree>
+        <HTTPSamplerProxy testclass="HTTPSamplerProxy" testname="下单" enabled="true">
+          <stringProp name="HTTPSampler.domain">shop.example.com</stringProp>
+          <stringProp name="HTTPSampler.path">/order</stringProp>
+          <stringProp name="HTTPSampler.method">POST</stringProp>
+        </HTTPSamplerProxy>
+        <hashTree/>
+        <ConstantThroughputTimer testclass="ConstantThroughputTimer" testname="限速 600/分钟" enabled="true">
+          <doubleProp>
+            <name>throughput</name>
+            <value>600.0</value>
+          </doubleProp>
+        </ConstantThroughputTimer>
+        <hashTree/>
+        <IfController testclass="IfController" testname="仅 VIP" enabled="true">
+          <stringProp name="IfController.condition">${vip}==1</stringProp>
+        </IfController>
+        <hashTree/>
+        <JSR223PostProcessor testclass="JSR223PostProcessor" testname="算签名" enabled="true">
+          <stringProp name="script">vars.put("sign", "x")</stringProp>
+        </JSR223PostProcessor>
+        <hashTree/>
+      </hashTree>
+    </hashTree>
+  </hashTree>
+</jmeterTestPlan>

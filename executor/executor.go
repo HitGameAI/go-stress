@@ -109,7 +109,23 @@ func NewExecutor(cfg *config.Config, storageMode StorageMode, storagePath string
 	}
 	e.logger.Info("📋 API配置: %d个", apiCount)
 
-	// 5. 创建调度器
+	// 5. 载入 CSV 数据源（整份读入，热路径上不做 IO）
+	var csvSource *CSVSource
+	if e.config.CSVData != nil {
+		data, err := config.LoadCSVData(e.config.CSVData)
+		if err != nil {
+			return nil, fmt.Errorf("载入 CSV 数据源失败: %w", err)
+		}
+		csvSource = NewCSVSource(data)
+		e.logger.InfoKV("📑 CSV 数据源已载入",
+			"path", e.config.CSVData.Path,
+			"rows", csvSource.RowCount(),
+			"variables", csvSource.Variables(),
+			"sharing", string(csvSource.Sharing()),
+			"recycle", csvSource.Recycle())
+	}
+
+	// 6. 创建调度器
 	var rampUp time.Duration
 	if e.config.Advanced != nil {
 		rampUp = e.config.Advanced.RampUp
@@ -128,6 +144,9 @@ func NewExecutor(cfg *config.Config, storageMode StorageMode, storagePath string
 		Controller:        nil, // 稍后设置
 		Logger:            e.logger,
 		InjectTraceHeader: e.config.Advanced == nil || !e.config.Advanced.DisableTraceHeader,
+
+		ThinkTime: e.config.ThinkTime,
+		CSVSource: csvSource,
 	})
 
 	return e, nil

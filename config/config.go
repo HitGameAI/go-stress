@@ -36,6 +36,12 @@ type Config struct {
 	// 多API配置（如果定义了APIs，则URL等字段作为公共配置）
 	APIs []APIConfig `json:"apis,omitempty" yaml:"apis,omitempty"`
 
+	// 思考时间（全局默认，可被单个 API 覆盖）
+	ThinkTime *ThinkTimeConfig `json:"think_time,omitempty" yaml:"think_time,omitempty"`
+
+	// CSV 数据驱动参数源（每条请求序列取走一行，变量以 {{.列名}} 引用）
+	CSVData *CSVDataConfig `json:"csv_data,omitempty" yaml:"csv_data,omitempty"`
+
 	// 变量配置
 	Variables map[string]any `json:"variables,omitempty" yaml:"variables,omitempty"` // 静态变量
 	// 动态变量解析器（运行时注入，不序列化）
@@ -86,6 +92,10 @@ type APIConfig struct {
 	Verify     []VerifyConfig    `json:"verify,omitempty" yaml:"verify,omitempty"`         // 可选，覆盖公共验证配置，支持多个验证规则
 	DependsOn  []string          `json:"depends_on,omitempty" yaml:"depends_on,omitempty"` // 依赖的API名称列表
 	Extractors []ExtractorConfig `json:"extractors,omitempty" yaml:"extractors,omitempty"` // 响应数据提取器
+
+	// ThinkTime 本 API 执行后的思考时间，覆盖全局配置
+	// JMeter 的 Timer 既可挂在测试计划下也可挂在单个采样器下，故两级都要有
+	ThinkTime *ThinkTimeConfig `json:"think_time,omitempty" yaml:"think_time,omitempty"`
 }
 
 // ExtractorConfig 数据提取器配置

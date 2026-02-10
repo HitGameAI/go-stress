@@ -16,6 +16,7 @@ import (
 	"os"
 	"path/filepath"
 
+	"github.com/kamalyes/go-logger"
 	"github.com/kamalyes/go-toolbox/pkg/mathx"
 	"gopkg.in/yaml.v3"
 )
@@ -23,11 +24,24 @@ import (
 // Loader 配置加载器
 type Loader struct {
 	varResolver *VariableResolver
+	logger      logger.ILogger
+}
+
+// WithLogger 注入日志器
+//
+// 加载过程原先用 fmt.Printf 直接写 stdout：那些输出绕过日志级别，-quiet 下照样
+// 刷屏，还会和报告表格混在一起。默认为空实现，调用方不注入即完全静默
+func (l *Loader) WithLogger(log logger.ILogger) *Loader {
+	if log != nil {
+		l.logger = log
+	}
+	return l
 }
 
 // NewLoader 创建配置加载器
 func NewLoader() *Loader {
 	return &Loader{
+		logger:      logger.NewEmptyLogger(),
 		varResolver: NewVariableResolver(),
 	}
 }
@@ -79,12 +93,9 @@ func (l *Loader) processConfig(config *Config) (*Config, error) {
 		return nil, fmt.Errorf("合并API配置失败: %w", err)
 	}
 
-	// 调试输出
-	if len(config.APIs) > 0 {
-		fmt.Printf("📋 配置了 %d 个API:\n", len(config.APIs))
-		for i, api := range config.APIs {
-			fmt.Printf("  [%d] %s: %s %s\n", i+1, api.Name, api.Method, api.URL)
-		}
+	for i, api := range config.APIs {
+		l.logger.DebugKV("已加载 API", "index", i+1, "name", api.Name,
+			"method", api.Method, "url", api.URL)
 	}
 
 	// 验证配置
@@ -165,15 +176,12 @@ func mergeHeaders(common, specific map[string]string) map[string]string {
 
 // validate 验证配置
 func (l *Loader) validate(config *Config) error {
-	fmt.Printf("🔍 验证配置: APIs数量=%d, config.URL=%s\n", len(config.APIs), config.URL)
 
 	// 如果定义了APIs，已经在mergeAPIsWithCommon中验证过了
 	if len(config.APIs) > 0 {
-		fmt.Printf("✅ 使用多API模式，跳过单URL验证\n")
 		// APIs配置已经通过merge验证
 		// 这里只需要验证基础配置
 	} else {
-		fmt.Printf("⚠️ 单API模式，检查URL\n")
 		// 单API模式，验证URL
 		if config.URL == "" {
 			return fmt.Errorf("URL不能为空")

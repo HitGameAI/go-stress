@@ -35,6 +35,9 @@ type Scheduler struct {
 	logger           logger.ILogger
 
 	injectTraceHeader bool // 是否向请求注入 traceparent 头
+
+	thinkTime *config.ThinkTimeConfig // 全局思考时间
+	csvSource *CSVSource              // CSV 数据源，全部 Worker 共享
 }
 
 // SchedulerConfig 调度器配置
@@ -51,6 +54,9 @@ type SchedulerConfig struct {
 	Logger           logger.ILogger
 
 	InjectTraceHeader bool // 是否向请求注入 traceparent 头
+
+	ThinkTime *config.ThinkTimeConfig // 全局思考时间（可选）
+	CSVSource *CSVSource              // CSV 数据源（可选）
 }
 
 // NewScheduler 创建调度器
@@ -74,6 +80,9 @@ func NewScheduler(cfg SchedulerConfig) *Scheduler {
 		logger:           cfg.Logger,
 
 		injectTraceHeader: cfg.InjectTraceHeader,
+
+		thinkTime: cfg.ThinkTime,
+		csvSource: cfg.CSVSource,
 	}
 }
 
@@ -148,6 +157,9 @@ func (s *Scheduler) runWorker(ctx context.Context, workerID uint64) error {
 		Logger:      s.logger,
 
 		InjectTraceHeader: s.injectTraceHeader,
+
+		ThinkTime: s.thinkTime,
+		CSVSource: s.csvSource,
 	}, s.varResolver)
 
 	// 运行worker
