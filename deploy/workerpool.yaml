@@ -1,0 +1,33 @@
+# go-stress Slave 压测节点池（go-kube-runtime 通用 WorkerPool CRD）
+#
+# 用法：envsubst 渲染 ${NAMESPACE} / ${WORKER_IMAGE} 后 kubectl apply -f workerpool.yaml
+# 前置：集群已安装 go-kube-runtime（CRD + operator），
+#      见 go-kube-runtime 仓库 scripts/apply.sh
+#
+# operator 恒注入 POD_NAME / POD_NAMESPACE，CR 中同名键优先
+apiVersion: pool.kamalyes.io/v1alpha1
+kind: WorkerPool
+metadata:
+  name: go-stress-slaves
+  namespace: ${NAMESPACE}
+spec:
+  replicas: 3
+  image: ${WORKER_IMAGE}
+  # 与 Master Service 对齐： Slave 经 gRPC 9090 注册、8088 上报实时数据
+  env:
+    GO_STRESS_MODE: slave
+    GO_STRESS_MASTER_ADDR: go-stress.${NAMESPACE}.svc:9090
+    GO_STRESS_MAX_CONCURRENCY: "5"
+    GO_STRESS_REGION: default
+  ports:
+    - name: grpc
+      containerPort: 9090
+    - name: realtime
+      containerPort: 8088
+  resources:
+    requests:
+      cpu: 500m
+      memory: 512Mi
+    limits:
+      cpu: "2"
+      memory: 2Gi

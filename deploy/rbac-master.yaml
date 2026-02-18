@@ -1,0 +1,49 @@
+# Master 选主所需的最小 RBAC（K8s Lease）
+#
+# 用法：envsubst 渲染 ${NAMESPACE} 后 kubectl apply -f rbac-master.yaml
+# 前置：go-stress Master 以 GO_STRESS_LEADER_ELECT=true 部署时才需要；
+#      单机/裸机运行无需本清单
+#
+# 注意：Lease 名默认 go-stress-master；若用 GO_STRESS_LEASE_NAME 覆盖，
+#      需同步修改 resourceNames
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: go-stress-master
+  namespace: ${NAMESPACE}
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: go-stress-master-leader
+  namespace: ${NAMESPACE}
+rules:
+  - apiGroups: ["coordination.k8s.io"]
+    resources: ["leases"]
+    # resourceNames 把权限收窄到 go-stress-master 这一个 Lease
+    resourceNames: ["go-stress-master"]
+    verbs: ["get", "update"]
+  - apiGroups: ["coordination.k8s.io"]
+    resources: ["leases"]
+    # 首次部署时 Lease 尚不存在，create 不能限定 resourceNames
+    verbs: ["create"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: go-stress-master-leader
+  namespace: ${NAMESPACE}
+subjects:
+  # 自建清单部署（Deployment 显式指定 serviceAccountName: go-stress-master）
+  - kind: ServiceAccount
+    name: go-stress-master
+    namespace: ${NAMESPACE}
+  # deploy-pipeline 渲染的 Deployment 不带 serviceAccountName，落在 default
+  # SA 上，因此同时绑定 default，两种部署路径都能选主
+  - kind: ServiceAccount
+    name: default
+    namespace: ${NAMESPACE}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: go-stress-master-leader
