@@ -43,7 +43,7 @@ storage: sqlite              # memory（默认）| sqlite | badger
 
 显式给出 `-storage` 时覆盖此项；各模式的取舍见 [存储适配器](STORAGE_ADAPTERS.md)
 
-> `sqlite` 依赖 cgo，以 `CGO_ENABLED=0` 构建的二进制请改用 `badger`（纯 Go）
+> `sqlite` 依赖 cgo：`CGO_ENABLED=0` 静态构建（容器化默认姿势）下为桩实现，选择 `sqlite` 会在启动时明确报错——改用 `badger`（纯 Go），或以 CGO 构建换取 SQLite 可用
 
 ## HTTP 配置
 

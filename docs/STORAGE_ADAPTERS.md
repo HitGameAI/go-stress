@@ -143,6 +143,8 @@ go-stress -config test.yaml -storage sqlite -storage-path ./reports.db
 - 支持 SQL 查询
 - 轻量级，无需额外部署
 
+**注意**：`CGO_ENABLED=0` 静态构建（容器化默认姿势）下 SQLite 为桩实现，创建时明确报错并提示改用 `badger` 或以 CGO 构建
+
 ---
 
 ### 场景 3：高并发分布式压测

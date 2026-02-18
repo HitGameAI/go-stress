@@ -245,6 +245,111 @@ graph LR
     style HTML fill:#e8f5e9
 ```
 
+## ☸️ 容器化与 K8s 部署
+
+容器化基于 [deploy-pipeline](https://github.com/kamalyes/deploy-pipeline) 可复用流水线：打 tag 或推送分支即自动触发「构建二进制（CGO_ENABLED=0）→ 构建镜像（ghcr.io）→ 渲染 K8s 模板部署 Master」，Slave 压测节点池由 [go-kube-runtime](https://github.com/kamalyes/go-kube-runtime) 的通用 WorkerPool operator 声明式管理
+
+```mermaid
+graph TB
+    subgraph CI["CI 流水线 · deploy-pipeline"]
+        BB["build-binary<br/>CGO_ENABLED=0"] --> BD["build-docker<br/>推送 ghcr.io"] --> DK["deploy-k8s<br/>渲染模板 · kubeconfig"]
+    end
+
+    DK -->|"部署 Master ×2"| M
+
+    subgraph K8S["K8s 集群（k3s / K8s 通用）"]
+        KRT["go-kube-runtime operator<br/>集群级一次性安装"]
+        WP["WorkerPool CR<br/>spec.replicas = N"]
+        M["Master ×2<br/>K8s Lease 选主 · 主备<br/>8080 HTTP · 9090 gRPC"]
+        SL["Slave Pool ×N<br/>同一镜像 · env 切角色"]
+
+        KRT -->|watch| WP
+        KRT -->|reconcile Deployment| SL
+        SL -->|gRPC 注册 / 心跳| M
+    end
+
+    style WP fill:#e5fff2,stroke:#0fdc78,color:#004d26
+    style M fill:#e1f5ff
+```
+
+**核心概念**
+
+| 组件 | 说明 |
+|:-----|:-----|
+| **单镜像多角色** | 一个 go-stress 镜像，通过环境变量切换角色（`GO_STRESS_MODE` 等），无需为 master / slave 分别出镜像 |
+| **WorkerPool CRD** | go-kube-runtime 提供的通用工作负载 CRD：`kubectl apply` 一改 `spec.replicas`，operator 秒级起 / 停 N 台压测节点，镜像、env、资源配额全量 CR 透传 |
+| **Master 主备** | Deployment 双副本 + K8s Lease 选主（go-kube-runtime 纯标准库实现，k3s / K8s 行为一致），主机故障备机自动接管，Slave 经 Service 重新注册 |
+| **operator** | 由 go-kube-runtime 仓库提供并一次性安装，go-stress 仓库不再内置 K8s 控制面代码 |
+
+### 前置：安装 go-kube-runtime（CRD + operator）
+
+```bash
+git clone https://github.com/kamalyes/go-kube-runtime && cd go-kube-runtime/operator
+# 参数：命名空间 / operator 镜像 / WorkerPool 默认镜像（可被 CR 的 spec.image 覆盖）
+NAMESPACE=stress \
+OPERATOR_IMAGE=ghcr.io/kamalyes/go-kube-runtime-operator:latest \
+WORKER_IMAGE=ghcr.io/kamalyes/go-stress:latest \
+  scripts/apply.sh
+```
+
+### 部署清单（`deploy/`）
+
+| 清单 | 作用 |
+|:-----|:-----|
+| `rbac-master.yaml` | Master 选主所需最小 RBAC（Lease `get/update/create`）；显式 SA 与 `default` SA 双绑定，兼容流水线渲染的 Deployment |
+| `workerpool.yaml` | Slave 压测节点池：3 副本、`${WORKER_IMAGE}` 占位，`GO_STRESS_MODE=slave` 经 gRPC 9090 注册到 Master Service |
+
+```bash
+export NAMESPACE=stress WORKER_IMAGE=ghcr.io/kamalyes/go-stress:latest
+envsubst < deploy/rbac-master.yaml  | kubectl apply -f -
+envsubst < deploy/workerpool.yaml   | kubectl apply -f -
+```
+
+### 容器化环境变量
+
+命令行显式给参时优先于环境变量，本地 CLI 行为不受影响
+
+| 环境变量 | 作用 |
+|:---------|:-----|
+| `GO_STRESS_MODE` | 运行角色：`master` / `slave` / `cli` / `file`，单镜像多角色的关键开关 |
+| `GO_STRESS_MASTER_ADDR` | Slave 注册的 Master 地址（如 `go-stress.stress.svc:9090`） |
+| `GO_STRESS_GRPC_PORT` / `GO_STRESS_HTTP_PORT` / `GO_STRESS_REALTIME_PORT` | gRPC / HTTP / 实时报告端口 |
+| `GO_STRESS_SLAVE_ID` | Slave 标识，缺省取 `POD_NAME`（副本生命周期内稳定，重连可顶掉旧条目） |
+| `GO_STRESS_REGION` | 节点区域标签 |
+| `GO_STRESS_MAX_CONCURRENCY` | 单 Slave 承担的并发上限（默认 5） |
+| `GO_STRESS_MASTER_SECRET` | Master 签发 Token 的密钥（经 K8s Secret 注入） |
+| `GO_STRESS_LEADER_ELECT` | `true` 时 Master 经 K8s Lease 选主；默认 Lease 名 `go-stress-master`，可用 `GO_STRESS_LEASE_NAME` 覆盖 |
+| `GO_STRESS_WORKER_ID` | Snowflake WorkerID（0-31），缺省从 `POD_NAME` 派生，多副本任务 ID 不冲突 |
+
+### CI 接入（deploy-pipeline）
+
+仓库变量 `vars.PIPELINE_CONFIG`（Master Deployment 由流水线渲染部署）：
+
+```yaml
+service:
+  secret_scan_dirs: "."    # 扫 main.go 的 ,env= 标记，为密钥生成 secretKeyRef
+ports:
+  http: 8080               # Master HTTP
+  rpc: 9090                # Master gRPC（Slave 注册用）
+env:
+  GO_STRESS_MODE: master
+  GO_STRESS_LEADER_ELECT: "true"
+kube:
+  namespace: stress
+  replicas: 2              # Master 双副本，配合选主形成主备
+```
+
+`secrets.PIPELINE_SECRETS`：
+
+```yaml
+kube:
+  kubeconfig: |            # 集群 kubeconfig（多行块标量）
+    apiVersion: v1
+    ...
+app:
+  GO_STRESS_MASTER_SECRET: <Master 密钥>
+```
+
 ## 📂 项目结构
 
 ```
@@ -258,6 +363,7 @@ go-stress/
 ├── statistics/             指标采集、延迟直方图、实时服务器、报告生成
 ├── storage/                存储适配器：memory / sqlite / badger
 ├── distributed/            Master/Slave 的 gRPC 服务、任务队列、节点池、聚合
+├── deploy/                 K8s 部署清单（Master 选主 RBAC、WorkerPool 压测节点池）
 ├── logger/                 日志封装（基于 go-logger）
 ├── types/                  跨包共享的类型定义
 ├── testserver/             内置测试服务器与示例配置

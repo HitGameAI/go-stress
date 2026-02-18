@@ -550,6 +550,19 @@ go-stress -mode master -grpc-port 9090 -log-level debug
 go-stress -mode slave -master master:9090 -log-level debug
 ```
 
+## K8s 多副本部署（主备选主）
+
+Master 以 Deployment 双副本部署时，同一时刻只有主副本对外提供服务：
+
+- `GO_STRESS_LEADER_ELECT=true` 开启选主（须处于 in-cluster 环境，单机 / 裸机运行零感知）
+- 选主基于 K8s Lease（coordination.k8s.io/v1），实现来自 [go-kube-runtime](https://github.com/kamalyes/go-kube-runtime)：默认 Lease 名 `go-stress-master`，可用 `GO_STRESS_LEASE_NAME` 覆盖
+- 主副本崩溃后备副本自动接管，Slave 经 Service 重新注册，无需人工介入
+- 多副本 Snowflake WorkerID 冲突已处理：`GO_STRESS_WORKER_ID` 显式指定（0-31），缺省从 `POD_NAME` 派生
+
+选主所需 RBAC 见 `deploy/rbac-master.yaml`；Slave 节点池与完整部署方案见 [README 容器化章节](../README.md#️-容器化与-k8s-部署)
+
+**已知限制**：主备切换瞬间，旧主上运行中的任务会与控制面"失联"——任务在 Slave 上继续跑完（[slave.go](../distributed/slave/slave.go) 没有"master 失联即中止"的分支），但切换窗口的统计无法归档：新主不认识旧 taskID（[queue.go](../distributed/master/queue.go) 的 `MoveToComplete` 报 not found），最终报告残缺；且新主无法停止这些旧任务，只能等其自然结束。压测任务通常短周期，这是"Master 纯内存态、不做跨主复制"的取舍；切换完成后请重新发起压测以获取完整报告
+
 ## 相关文档
 
 - [快速开始](GETTING_STARTED.md) - 基础使用
