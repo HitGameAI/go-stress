@@ -1,3 +1,5 @@
+//go:build cgo
+
 /*
  * @Author: kamalyes 501893067@qq.com
  * @Date: 2026-01-24 00:00:00
@@ -31,6 +33,10 @@ import (
 const (
 	// 表名常量
 	tableRequestDetails = "request_details"
+
+	// sqliteCGOEnabled 标记当前二进制包含真正的 SQLite 实现
+	// （测试用它跳过 sqlite 用例，与 sqlite_stub.go 中的同名常量互斥）
+	sqliteCGOEnabled = true
 )
 
 // DetailStorage SQLite持久化存储（实现 Interface）

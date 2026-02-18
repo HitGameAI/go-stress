@@ -1,3 +1,5 @@
+//go:build cgo
+
 /*
  * @Author: kamalyes 501893067@qq.com
  * @Date: 2026-02-10 15:30:22
