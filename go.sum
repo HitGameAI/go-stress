@@ -30,6 +30,8 @@ github.com/gorilla/websocket v1.5.3 h1:saDtZ6Pbx/0u+bgYQ3q96pZgCzfhKXGPqt7kZ72aN
 github.com/gorilla/websocket v1.5.3/go.mod h1:YR8l580nyteQvAITg2hZ9XVh4b55+EU/adAjf1fMHhE=
 github.com/kamalyes/go-argus v0.5.2-0.20261101155702-989306c19858 h1:e/yd6K+l708/MQt6y0wlrHZ0+CONY2UiwP+iheb2hIQ=
 github.com/kamalyes/go-argus v0.5.2-0.20261101155702-989306c19858/go.mod h1:dG5ttCh6wVn1u5qq4NEvoFtibgQ5Bj3PT8rw7HKX8c0=
+github.com/kamalyes/go-kube-runtime v1.0.0 h1:GNNzfr8oX6lClRDPpfB3z3RJ1ajmFuDWNRnRK2+z0PA=
+github.com/kamalyes/go-kube-runtime v1.0.0/go.mod h1:PZBoXCsIi2P+xl3JtRXvLBfiKj4nT+ZAdyiLfrwaIMU=
 github.com/kamalyes/go-logger v0.10.1-0.20261102054507-23c78f4f7478 h1:71j6Jgt3GcFy0VtJM7hh1uCML9z1Ayc7h3baFpVciiU=
 github.com/kamalyes/go-logger v0.10.1-0.20261102054507-23c78f4f7478/go.mod h1:09lQpL98vfzN9kkVVBVWqXrFaT6ZpXFKF2znyXt3dWM=
 github.com/kamalyes/go-toolbox v0.19.2 h1:ixNL60HmCAKTnRfOH8IBCgI+5rtBxGzEItLf4leAgEM=
