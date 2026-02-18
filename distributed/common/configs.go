@@ -46,6 +46,11 @@ type MasterConfig struct {
 	// Slave 数量计算配置
 	WorkersPerSlave int `json:"workers_per_slave" yaml:"workers_per_slave"` // 每个 Slave 承担的 Worker 数量,默认 100
 	MinSlaveCount   int `json:"min_slave_count" yaml:"min_slave_count"`     // 最小 Slave 数量,默认 1
+
+	// Snowflake WorkerID（0-31）
+	// 多 Master 部署时各副本须不同，否则会生成重复的任务 ID；0 表示未设置，
+	// 由 NewMaster 兜底为 1（保持单机行为不变）
+	WorkerID int `json:"worker_id" yaml:"worker_id"`
 }
 
 // SlaveConfig Slave 配置

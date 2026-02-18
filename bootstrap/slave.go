@@ -45,8 +45,16 @@ func RunSlave(opts SlaveOptions) error {
 	}
 
 	// 自动生成 Slave ID
+	//
+	// K8s 部署时优先用 POD_NAME（deploy-pipeline 模板已注入）：时间戳 ID 在
+	// Pod 重建后会变，Master 侧会残留已下线的旧 Slave 条目；而 Pod 名在
+	// 副本生命周期内稳定，重连能顶掉旧条目
 	if opts.SlaveID == "" {
-		opts.SlaveID = fmt.Sprintf("slave-%s-%d", opts.Region, time.Now().Unix())
+		if podName := os.Getenv("POD_NAME"); podName != "" {
+			opts.SlaveID = fmt.Sprintf("slave-%s-%s", opts.Region, podName)
+		} else {
+			opts.SlaveID = fmt.Sprintf("slave-%s-%d", opts.Region, time.Now().Unix())
+		}
 		opts.Logger.InfoKV("📝 自动生成 Slave ID", "slave_id", opts.SlaveID)
 	}
 

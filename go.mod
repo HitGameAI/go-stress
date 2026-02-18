@@ -7,6 +7,7 @@ require (
 	github.com/google/uuid v1.6.0
 	github.com/gorilla/websocket v1.5.3
 	github.com/kamalyes/go-argus v0.5.2-0.20261101155702-989306c19858
+	github.com/kamalyes/go-kube-runtime v0.1.0
 	github.com/kamalyes/go-logger v0.10.1-0.20261102054507-23c78f4f7478
 	github.com/kamalyes/go-toolbox v0.19.2
 	github.com/mattn/go-sqlite3 v1.14.33
@@ -46,3 +47,7 @@ require (
 	golang.org/x/text v0.42.0 // indirect
 	google.golang.org/genproto v0.0.0-20230410155749-daa745c078e1 // indirect
 )
+
+// go-kube-runtime 尚未发布 tag，联调用本地 replace；
+// 正式发版后（如 v0.1.0 tag）删除 replace 即可直接拉取
+replace github.com/kamalyes/go-kube-runtime => ../go-kube-runtime

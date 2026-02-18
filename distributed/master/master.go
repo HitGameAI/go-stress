@@ -73,6 +73,12 @@ func NewMaster(config *common.MasterConfig, log logger.ILogger) (*Master, error)
 	config.WorkersPerSlave = mathx.IfNotZero(config.WorkersPerSlave, 100)
 	config.MinSlaveCount = mathx.IfNotZero(config.MinSlaveCount, 1)
 
+	// WorkerID 0 视为未设置兜底为 1（旧版固定值），保持单机部署行为不变；
+	// 多 Master 部署时各副本通过该字段区分，避免 Snowflake ID 冲突
+	if config.WorkerID == 0 {
+		config.WorkerID = 1
+	}
+
 	// 创建 Slave 选择器
 	selector := GetSelector(common.SelectStrategyLeastLoaded, nil)
 
@@ -85,7 +91,7 @@ func NewMaster(config *common.MasterConfig, log logger.ILogger) (*Master, error)
 		taskQueue:    NewTaskQueue(splitter, log),
 		collector:    NewStatsCollector(1000, log),
 		slaveClients: syncx.NewMap[string, pb.SlaveServiceClient](),
-		idGenerator:  idgen.NewSnowflakeGenerator(1, 1), // workerID=1, datacenter=1
+		idGenerator:  idgen.NewSnowflakeGenerator(int64(config.WorkerID), 1),
 		running:      syncx.NewBool(false),
 		logger:       log,
 	}

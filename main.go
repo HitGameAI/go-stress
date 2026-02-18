@@ -13,8 +13,10 @@ package main
 import (
 	"flag"
 	"fmt"
+	"hash/fnv"
 	"os"
 	"runtime/debug"
+	"strconv"
 	"time"
 
 	"github.com/kamalyes/go-stress/bootstrap"
@@ -210,6 +212,9 @@ func init() {
 func main() {
 	flag.Parse()
 
+	// 容器/K8s 部署通过环境变量注入配置（对应 deploy-pipeline 的 EXTRA_ENV_BLOCK）
+	applyEnvDefaults()
+
 	// 初始化日志器
 	initLogger()
 
@@ -345,6 +350,91 @@ func initLogger() {
 		log = log.WithOutput(logger.NewRotateWriter(logFile, 0, 0))
 	}
 	logger.SetDefault(log)
+}
+
+// applyEnvDefaults 用环境变量兜底命令行参数
+//
+// 容器化部署（K8s Deployment / StressSlavePool CRD）通过 env 注入配置而非改写镜像
+// 启动命令。优先级：命令行 > 环境变量 > 默认值，因此只在 flag 未被显式指定
+// （flagExplicitlySet）时才用 env 覆盖，本地命令行行为完全不受影响
+func applyEnvDefaults() {
+	// 运行模式：单镜像多角色（master/slave 共用一个镜像）的关键开关
+	if v := os.Getenv("GO_STRESS_MODE"); v != "" && !flagExplicitlySet("mode") {
+		switch types.RunMode(v) {
+		case ExportRunModeMaster, ExportRunModeSlave, ExportRunModeStandaloneCLI, ExportRunModeStandaloneFile:
+			_ = mode.Set(v)
+		default:
+			fmt.Fprintf(os.Stderr, "⚠️  忽略无效的 GO_STRESS_MODE=%q（支持: master/slave/cli/file）\n", v)
+		}
+	}
+
+	if v := os.Getenv("GO_STRESS_MASTER_ADDR"); v != "" && !flagExplicitlySet("master") {
+		masterAddr = v
+	}
+	if v := os.Getenv("GO_STRESS_SLAVE_ID"); v != "" && !flagExplicitlySet("slave-id") {
+		slaveID = v
+	}
+	if v := envInt("GO_STRESS_GRPC_PORT"); v != nil && !flagExplicitlySet("grpc-port") {
+		grpcPort = *v
+	}
+	if v := envInt("GO_STRESS_HTTP_PORT"); v != nil && !flagExplicitlySet("http-port") {
+		httpPort = *v
+	}
+	if v := envInt("GO_STRESS_REALTIME_PORT"); v != nil && !flagExplicitlySet("realtime-port") {
+		realtimePort = *v
+	}
+	if v := os.Getenv("GO_STRESS_REGION"); v != "" && !flagExplicitlySet("region") {
+		region = v
+	}
+	// ,env=GO_STRESS_MASTER_SECRET
+	// ↑ deploy-pipeline 密钥扫描标记：值经 K8s Secret 注入，主代码只读环境变量
+	if v := os.Getenv("GO_STRESS_MASTER_SECRET"); v != "" && !flagExplicitlySet("master-secret") {
+		masterSecret = v
+	}
+}
+
+// envInt 读取整型环境变量，未设置或解析失败返回 nil
+func envInt(key string) *int {
+	v := os.Getenv(key)
+	if v == "" {
+		return nil
+	}
+	n, err := strconv.Atoi(v)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "⚠️  忽略无效的环境变量 %s=%q: %v\n", key, v, err)
+		return nil
+	}
+	return &n
+}
+
+// envIntOr 读取整型环境变量，未设置或非法时返回 def
+func envIntOr(key string, def int) int {
+	if v := envInt(key); v != nil {
+		return *v
+	}
+	return def
+}
+
+// resolveMasterWorkerID 解析 Master 的 Snowflake WorkerID（取值范围 0-31）
+//
+// 多 Master 部署时固定 workerID=1 会产生重复的任务 ID。派生顺序：
+//   - GO_STRESS_WORKER_ID 显式指定（ Helm/Deployment 静态分配时用）
+//   - 否则从 POD_NAME 派生（K8s 副本名稳定且全局唯一，deploy-pipeline 模板已注入）
+//   - 都没有则返回 0，由 NewMaster 兜底为 1（保持单机行为不变）
+func resolveMasterWorkerID() int {
+	if v := envInt("GO_STRESS_WORKER_ID"); v != nil {
+		if *v >= 0 && *v <= 31 {
+			return *v
+		}
+		fmt.Fprintf(os.Stderr, "⚠️  GO_STRESS_WORKER_ID=%d 超出 [0,31]，改用 POD_NAME 派生\n", *v)
+	}
+	if podName := os.Getenv("POD_NAME"); podName != "" {
+		// fnv-1a 32位哈希折叠到 [0,31]，与 SnowflakeMaxWorkerID 对齐
+		h := fnv.New32a()
+		_, _ = h.Write([]byte(podName))
+		return int(h.Sum32() % 32)
+	}
+	return 0
 }
 
 // flagExplicitlySet 判断某个命令行标志是否被用户显式指定过
@@ -844,6 +934,8 @@ func runMasterMode() {
 		TokenExpiration:   tokenExpiration,
 		TokenIssuer:       tokenIssuer,
 		Secret:            masterSecret,
+		// 多副本部署时按 Pod 派生，避免各副本生成重复的 Snowflake ID
+		WorkerID: resolveMasterWorkerID(),
 	}
 
 	if err := bootstrap.RunMaster(opts); err != nil {
@@ -854,12 +946,13 @@ func runMasterMode() {
 // runSlaveMode 运行 Slave 模式
 func runSlaveMode() {
 	opts := bootstrap.SlaveOptions{
-		SlaveID:        slaveID,
-		MasterAddr:     masterAddr,
-		GRPCPort:       grpcPort,
-		RealtimePort:   realtimePort,
-		Region:         region,
-		MaxConcurrency: 5,
+		SlaveID:      slaveID,
+		MasterAddr:   masterAddr,
+		GRPCPort:     grpcPort,
+		RealtimePort: realtimePort,
+		Region:       region,
+		// K8s 下由 CRD/Deployment 通过 GO_STRESS_MAX_CONCURRENCY 控制单 Slave 容量
+		MaxConcurrency: envIntOr("GO_STRESS_MAX_CONCURRENCY", 5),
 		CanReuse:       true,
 		Logger:         logger.Default,
 	}
