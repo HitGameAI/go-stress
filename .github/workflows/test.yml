@@ -34,7 +34,10 @@ jobs:
           go-version: ${{ matrix.go-version }}
 
       - name: Install gotestsum
-        run: go install gotest.tools/gotestsum@v1.12.0 # 指定版本
+        # v1.12.0 固定依赖 golang.org/x/tools v0.19.0，其内部 tokeninternal
+        # 镜像了 go/types 内存布局并内置编译期防呆断言，在 Go 1.26 下必炸
+        # （invalid array length -delta * delta）；v1.13.0（x/tools v0.36.0）已验证可编
+        run: go install gotest.tools/gotestsum@v1.13.0 # 指定版本
       - name: Test
         run: gotestsum -f testname -- ./... -race -count=1 -shuffle=on
         continue-on-error: true
