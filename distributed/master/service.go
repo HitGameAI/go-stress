@@ -12,6 +12,7 @@ package master
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"time"
@@ -151,6 +152,16 @@ func (s *MasterServiceServer) ReportTaskCompletion(ctx context.Context, req *pb.
 	// 更新任务状态
 	if req.Success {
 		if err := s.master.taskQueue.MoveToComplete(req.TaskId); err != nil {
+			// 主备切换后的孤儿任务：新主内存态没有它，但统计已经聚合器归档，
+			// 宽容确认，避免 Slave 反复收到失败回执
+			if errors.Is(err, ErrTaskNotFoundInRunning) {
+				s.logger.WarnContextKV(ctx, "Task unknown to this master (likely after failover), acknowledged",
+					"task_id", req.TaskId)
+				return &pb.TaskCompletionResponse{
+					Acknowledged: true,
+					Message:      "Task unknown to this master (likely after failover), stats already archived",
+				}, nil
+			}
 			s.logger.ErrorContextKV(ctx, "Failed to move task to complete", "task_id", req.TaskId, "error", err)
 			return &pb.TaskCompletionResponse{
 				Acknowledged: false,
@@ -163,6 +174,15 @@ func (s *MasterServiceServer) ReportTaskCompletion(ctx context.Context, req *pb.
 			reason = "Task failed without error message"
 		}
 		if err := s.master.taskQueue.MoveToFailed(req.TaskId, reason); err != nil {
+			// 同上：主备切换后的孤儿任务，宽容确认
+			if errors.Is(err, ErrTaskNotFoundInRunning) {
+				s.logger.WarnContextKV(ctx, "Task unknown to this master (likely after failover), acknowledged",
+					"task_id", req.TaskId)
+				return &pb.TaskCompletionResponse{
+					Acknowledged: true,
+					Message:      "Task unknown to this master (likely after failover), stats already archived",
+				}, nil
+			}
 			s.logger.ErrorContextKV(ctx, "Failed to move task to failed", "task_id", req.TaskId, "error", err)
 			return &pb.TaskCompletionResponse{
 				Acknowledged: false,

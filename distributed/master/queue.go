@@ -12,6 +12,7 @@ package master
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"sync"
 	"sync/atomic"
@@ -21,6 +22,10 @@ import (
 	"github.com/kamalyes/go-stress/distributed/common"
 	"github.com/kamalyes/go-toolbox/pkg/syncx"
 )
+
+// ErrTaskNotFoundInRunning 任务在运行中队列里不存在（新主内存态没有它）。
+// 主备切换后新主不认识旧主派发的任务，完成/失败上报据此宽容处理
+var ErrTaskNotFoundInRunning = errors.New("task not found in running queue")
 
 // TaskQueue 任务队列 - 使用分片和优化的并发访问
 type TaskQueue struct {
@@ -255,7 +260,7 @@ func (tq *TaskQueue) MoveToRunning(taskID string) error {
 func (tq *TaskQueue) MoveToComplete(taskID string) error {
 	task, ok := tq.running.Load(taskID)
 	if !ok {
-		return fmt.Errorf("task %s not found in running queue", taskID)
+		return fmt.Errorf("%w: task %s", ErrTaskNotFoundInRunning, taskID)
 	}
 
 	// 检查终态（不需要锁，因为 syncx.Map 是并发安全的）
@@ -301,7 +306,7 @@ func (tq *TaskQueue) MoveToComplete(taskID string) error {
 func (tq *TaskQueue) MoveToFailed(taskID string, reason string) error {
 	task, ok := tq.running.Load(taskID)
 	if !ok {
-		return fmt.Errorf("task %s not found in running queue", taskID)
+		return fmt.Errorf("%w: task %s", ErrTaskNotFoundInRunning, taskID)
 	}
 
 	// 检查终态
