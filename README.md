@@ -83,6 +83,33 @@ graph LR
     style HTML fill:#e8f5e9
 ```
 
+### 🔄 一次压测请求的生命周期
+
+```mermaid
+sequenceDiagram
+    autonumber
+    participant S as Scheduler 调度
+    participant L as RateLimiter 定速
+    participant W as Worker 池
+    participant M as 中间件链 熔断→重试→验证
+    participant P as 协议客户端 HTTP/gRPC/WS
+    participant T as 被压目标
+    participant H as 延迟直方图
+
+    S->>L: 等待下一个令牌（-qps 定速）
+    L-->>W: 放行一个执行槽
+    W->>W: 思考时间 think_time + CSV 取数
+    W->>M: 发起请求（变量已参数化）
+    M->>P: 熔断通过，交给协议客户端
+    P->>T: HTTP/1.1 · HTTP/2 · gRPC · WebSocket
+    T-->>P: 响应
+    P-->>M: 耗时 / 状态码 / 响应体
+    M->>M: 验证器断言 状态码/JSONPath/Schema
+    M-->>W: 结果（可重试失败再走一轮）
+    W->>H: 原子自增对应延迟桶
+    H-->>H: P50/P90/P95/P99 实时可查
+```
+
 ## ✨ 核心能力
 
 - **多协议**: HTTP/1.1、HTTP/2、gRPC（含反射与 TLS）、WebSocket
