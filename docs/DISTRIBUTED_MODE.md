@@ -561,9 +561,92 @@ Master 以 Deployment 双副本部署时，同一时刻只有主副本对外提�
 
 选主所需 RBAC 见 `deploy/rbac-master.yaml`；Slave 节点池与完整部署方案见 [README 容器化章节](../README.md#️-容器化与-k8s-部署)
 
-**已知限制**：主备切换瞬间，旧主上运行中的任务会与控制面"失联"——任务在 Slave 上继续跑完（[slave.go](../distributed/slave/slave.go) 没有"master 失联即中止"的分支），但切换窗口的统计无法归档：新主不认识旧 taskID（[queue.go](../distributed/master/queue.go) 的 `MoveToComplete` 报 not found），最终报告残缺；且新主无法停止这些旧任务，只能等其自然结束。压测任务通常短周期，这是"Master 纯内存态、不做跨主复制"的取舍；切换完成后请重新发起压测以获取完整报告
+**已知限制与缓解**：主备切换瞬间，旧主上运行中的任务会与控制面"失联"。缓解手段：① Slave 侧 `GO_STRESS_ABORT_ON_MASTER_LOST=true`（[workerpool.yaml](../deploy/workerpool.yaml) 默认开启）——心跳连续失败超过 3 个周期（15s）即中止当前任务，止损等新主重连后重新调度；② 新主对完成上报里的陌生 taskID 宽容确认（[queue.go](../distributed/master/queue.go) 以 `ErrTaskNotFoundInRunning` 哨兵标记），统计经聚合器按 taskID 自动建档，最终报告不再丢失切换窗口的数据。仍然残留：旧任务在新主没有状态记录（无法按任务查询/控制），任务状态视角以重新发起为准
 
 ## 相关文档
 
 - [快速开始](GETTING_STARTED.md) - 基础使用
 - [命令行参考](CLI_REFERENCE.md) - 分布式参数
+
+---
+
+## ☸️ K8s 部署完整手册
+
+容器化基于 [deploy-pipeline](https://github.com/kamalyes/deploy-pipeline) 可复用流水线：打 tag 或推送分支即自动触发「构建二进制（CGO_ENABLED=0）→ 构建镜像（ghcr.io）→ 渲染 K8s 模板部署 Master」，Slave 压测节点池由 [go-kube-runtime](https://github.com/kamalyes/go-kube-runtime) 的通用 WorkerPool operator 声明式管理
+
+| 组件 | 说明 |
+|:-----|:-----|
+| **单镜像多角色** | 一个 go-stress 镜像，通过环境变量切换角色（`GO_STRESS_MODE` 等），无需为 master / slave 分别出镜像 |
+| **WorkerPool CRD** | go-kube-runtime 提供的通用工作负载 CRD：`kubectl apply` 一改 `spec.replicas`，operator 秒级起 / 停 N 台压测节点，镜像、env、资源配额全量 CR 透传 |
+| **Master 主备** | Deployment 双副本 + K8s Lease 选主（go-kube-runtime 纯标准库实现，k3s / K8s 行为一致），主机故障备机自动接管，Slave 经 Service 重新注册 |
+| **operator** | 由 go-kube-runtime 仓库提供并一次性安装，go-stress 仓库不再内置 K8s 控制面代码 |
+
+### 前置：安装 go-kube-runtime（CRD + operator）
+
+```bash
+git clone https://github.com/kamalyes/go-kube-runtime && cd go-kube-runtime/operator
+# 参数：命名空间 / operator 镜像 / WorkerPool 默认镜像（可被 CR 的 spec.image 覆盖）
+NAMESPACE=stress \
+OPERATOR_IMAGE=ghcr.io/kamalyes/go-kube-runtime-operator:latest \
+WORKER_IMAGE=ghcr.io/kamalyes/go-stress:latest \
+  scripts/apply.sh
+```
+
+### 部署清单（`deploy/`）
+
+| 清单 | 作用 |
+|:-----|:-----|
+| `rbac-master.yaml` | Master 选主所需最小 RBAC（Lease `get/update/create`）；显式 SA 与 `default` SA 双绑定，兼容流水线渲染的 Deployment |
+| `workerpool.yaml` | Slave 压测节点池：3 副本、`${WORKER_IMAGE}` 占位，`GO_STRESS_MODE=slave` 经 gRPC 9090 注册到 Master Service |
+
+```bash
+export NAMESPACE=stress WORKER_IMAGE=ghcr.io/kamalyes/go-stress:latest
+envsubst < deploy/rbac-master.yaml  | kubectl apply -f -
+envsubst < deploy/workerpool.yaml   | kubectl apply -f -
+```
+
+### 容器化环境变量
+
+命令行显式给参时优先于环境变量，本地 CLI 行为不受影响
+
+| 环境变量 | 作用 |
+|:---------|:-----|
+| `GO_STRESS_MODE` | 运行角色：`master` / `slave` / `cli` / `file`，单镜像多角色的关键开关 |
+| `GO_STRESS_MASTER_ADDR` | Slave 注册的 Master 地址（如 `go-stress.stress.svc:9090`） |
+| `GO_STRESS_GRPC_PORT` / `GO_STRESS_HTTP_PORT` / `GO_STRESS_REALTIME_PORT` | gRPC / HTTP / 实时报告端口 |
+| `GO_STRESS_SLAVE_ID` | Slave 标识，缺省取 `POD_NAME`（副本生命周期内稳定，重连可顶掉旧条目） |
+| `GO_STRESS_REGION` | 节点区域标签 |
+| `GO_STRESS_MAX_CONCURRENCY` | 单 Slave 承担的并发上限（默认 5） |
+| `GO_STRESS_ABORT_ON_MASTER_LOST` | `true` 时 Slave 在 Master 失联超过 3 个心跳周期后中止当前任务（主备切换止损，默认关闭） |
+| `GO_STRESS_MASTER_SECRET` | Master 签发 Token 的密钥（经 K8s Secret 注入） |
+| `GO_STRESS_LEADER_ELECT` | `true` 时 Master 经 K8s Lease 选主；默认 Lease 名 `go-stress-master`，可用 `GO_STRESS_LEASE_NAME` 覆盖 |
+| `GO_STRESS_WORKER_ID` | Snowflake WorkerID（0-31），缺省从 `POD_NAME` 派生，多副本任务 ID 不冲突 |
+
+### CI 接入（deploy-pipeline）
+
+仓库变量 `vars.PIPELINE_CONFIG`（Master Deployment 由流水线渲染部署）：
+
+```yaml
+service:
+  secret_scan_dirs: "."    # 扫 main.go 的 ,env= 标记，为密钥生成 secretKeyRef
+ports:
+  http: 8080               # Master HTTP
+  rpc: 9090                # Master gRPC（Slave 注册用）
+env:
+  GO_STRESS_MODE: master
+  GO_STRESS_LEADER_ELECT: "true"
+kube:
+  namespace: stress
+  replicas: 2              # Master 双副本，配合选主形成主备
+```
+
+`secrets.PIPELINE_SECRETS`：
+
+```yaml
+kube:
+  kubeconfig: |            # 集群 kubeconfig（多行块标量）
+    apiVersion: v1
+    ...
+app:
+  GO_STRESS_MASTER_SECRET: <Master 密钥>
+```
