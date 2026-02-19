@@ -1,5 +1,10 @@
 name: Build & Release Binaries
 
+# GITHUB_TOKEN 需要写权限来创建 Release 并上传产物，
+# 缺失时默认只读 token 会 403: Resource not accessible by integration
+permissions:
+  contents: write
+
 on:
   push:
     tags:
