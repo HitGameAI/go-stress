@@ -68,4 +68,8 @@ type SlaveConfig struct {
 	ReportBuffer    int               `json:"report_buffer" yaml:"report_buffer"`
 	ReportInterval  time.Duration     `json:"report_interval" yaml:"report_interval"`
 	ResourceMonitor bool              `json:"resource_monitor" yaml:"resource_monitor"` // 是否启用资源监控
+	// AbortOnMasterLost Master 失联超过阈值（3 个心跳周期）时是否中止当前任务。
+	// 主备切换窗口内旧任务会沦为"孤儿"（新主不认识、无法停止、报告残缺），
+	// 开启后任务跟随 Master 存亡；默认关闭，任务跑完但报告可能残缺
+	AbortOnMasterLost bool `json:"abort_on_master_lost" yaml:"abort_on_master_lost"`
 }

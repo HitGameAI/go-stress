@@ -16,6 +16,7 @@ import (
 	"fmt"
 	"net"
 	"runtime"
+	"sync/atomic"
 	"time"
 
 	"github.com/kamalyes/go-logger"
@@ -34,6 +35,11 @@ import (
 	"google.golang.org/grpc/credentials/insecure"
 )
 
+// masterLostAbortThreshold 心跳连续失败多少个周期后判定 Master 失联
+// 3×5s=15s，与默认 Lease 有效期对齐：主备切换在 Lease 过期后完成，
+// 任务不会长时间脱离控制面裸跑
+const masterLostAbortThreshold = 3
+
 // Slave Slave 节点 - 使用 syncx 模块重构
 type Slave struct {
 	config        *common.SlaveConfig
@@ -49,6 +55,8 @@ type Slave struct {
 	currentTaskID string
 	cancelFunc    context.CancelFunc
 	heartbeatTask *syncx.PeriodicTaskManager // 使用 syncx.PeriodicTask 管理心跳
+	// heartbeatFails 心跳连续失败计数（Master 失联检测）
+	heartbeatFails atomic.Int32
 }
 
 // NewSlave 创建 Slave 实例
@@ -309,6 +317,7 @@ func (s *Slave) sendHeartbeat() error {
 	if err != nil {
 		// 网络错误，可能 Master 正在重启，继续等待重连
 		s.logger.DebugKV("Heartbeat failed, will retry", "error", err)
+		s.onHeartbeatFailure()
 		return nil // 返回 nil 让 PeriodicTask 继续执行
 	}
 
@@ -317,16 +326,41 @@ func (s *Slave) sendHeartbeat() error {
 		s.logger.InfoKV("Heartbeat rejected, attempting re-registration", "message", resp.Message)
 		if err := s.register(); err != nil {
 			s.logger.WarnKV("Re-registration failed", "error", err)
+			s.onHeartbeatFailure()
 			return nil // 返回 nil 继续重试
 		}
+		s.heartbeatFails.Store(0)
 		s.logger.InfoKV("Re-registered successfully", "slave_id", s.info.ID)
 		return nil
 	}
 
+	s.heartbeatFails.Store(0)
 	s.logger.DebugKV("Heartbeat sent",
 		"slave_id", s.info.ID,
 		"state", status.State)
 	return nil
+}
+
+// onHeartbeatFailure 心跳失败计数，连续超过阈值且开启 AbortOnMasterLost 时中止当前任务
+//
+// 主备切换窗口内，旧主派发的任务会成为新主不认识的"孤儿"（无法停止、
+// 状态无法归档）；开启此开关让任务跟随 Master 存亡——失联超过 3 个
+// 心跳周期（15s）即中止，等重连后由新主重新调度
+func (s *Slave) onHeartbeatFailure() {
+	fails := s.heartbeatFails.Add(1)
+	if !s.config.AbortOnMasterLost || fails < masterLostAbortThreshold {
+		return
+	}
+	taskID := s.currentTaskID
+	if taskID == "" {
+		return
+	}
+	s.logger.WarnKV("Master lost beyond threshold, aborting current task",
+		"task_id", taskID,
+		"heartbeat_failures", fails)
+	if err := s.StopTask(taskID); err != nil {
+		s.logger.WarnKV("Failed to abort task on master loss", "task_id", taskID, "error", err)
+	}
 }
 
 // startGRPCServer 启动 gRPC 服务器

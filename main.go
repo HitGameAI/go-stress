@@ -415,6 +415,17 @@ func envIntOr(key string, def int) int {
 	return def
 }
 
+// envBoolOr 读取布尔环境变量，未设置或非法时返回 def
+func envBoolOr(key string, def bool) bool {
+	switch os.Getenv(key) {
+	case "true", "1", "yes", "TRUE", "True":
+		return true
+	case "false", "0", "no", "FALSE", "False":
+		return false
+	}
+	return def
+}
+
 // resolveMasterWorkerID 解析 Master 的 Snowflake WorkerID（取值范围 0-31）
 //
 // 多 Master 部署时固定 workerID=1 会产生重复的任务 ID。派生顺序：
@@ -954,7 +965,9 @@ func runSlaveMode() {
 		// K8s 下由 CRD/Deployment 通过 GO_STRESS_MAX_CONCURRENCY 控制单 Slave 容量
 		MaxConcurrency: envIntOr("GO_STRESS_MAX_CONCURRENCY", 5),
 		CanReuse:       true,
-		Logger:         logger.Default,
+		// 主备切换窗口内任务会沦为"孤儿"，开启后失联超阈值即中止（详见 docs/DISTRIBUTED_MODE.md）
+		AbortOnMasterLost: envBoolOr("GO_STRESS_ABORT_ON_MASTER_LOST", false),
+		Logger:            logger.Default,
 	}
 	if err := bootstrap.RunSlave(opts); err != nil {
 		logger.Default.Fatalf("❌ 运行 Slave 失败: %v", err)

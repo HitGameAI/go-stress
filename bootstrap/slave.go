@@ -34,6 +34,9 @@ type SlaveOptions struct {
 	MaxConcurrency int
 	CanReuse       bool
 	Logger         logger.ILogger
+
+	// AbortOnMasterLost Master 失联超过阈值（3 个心跳周期）时中止当前任务
+	AbortOnMasterLost bool
 }
 
 // RunSlave 运行 Slave 节点
@@ -80,17 +83,18 @@ func RunSlave(opts SlaveOptions) error {
 	}
 
 	slaveCfg := &common.SlaveConfig{
-		SlaveID:         opts.SlaveID,
-		MasterAddr:      opts.MasterAddr,
-		GRPCPort:        int32(opts.GRPCPort),
-		RealtimePort:    opts.RealtimePort,
-		Region:          opts.Region,
-		Labels:          map[string]string{"region": opts.Region},
-		MaxConcurrency:  opts.MaxConcurrency,
-		CanReuse:        opts.CanReuse,
-		ReportBuffer:    1000,
-		ReportInterval:  5 * time.Second,
-		ResourceMonitor: true,
+		SlaveID:           opts.SlaveID,
+		MasterAddr:        opts.MasterAddr,
+		GRPCPort:          int32(opts.GRPCPort),
+		RealtimePort:      opts.RealtimePort,
+		Region:            opts.Region,
+		Labels:            map[string]string{"region": opts.Region},
+		MaxConcurrency:    opts.MaxConcurrency,
+		CanReuse:          opts.CanReuse,
+		ReportBuffer:      1000,
+		ReportInterval:    5 * time.Second,
+		ResourceMonitor:   true,
+		AbortOnMasterLost: opts.AbortOnMasterLost,
 	}
 
 	s, err := slave.NewSlave(slaveCfg, opts.Logger)

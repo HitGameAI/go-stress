@@ -19,6 +19,9 @@ spec:
     GO_STRESS_MASTER_ADDR: go-stress.${NAMESPACE}.svc:9090
     GO_STRESS_MAX_CONCURRENCY: "5"
     GO_STRESS_REGION: default
+    # Master 失联超过 3 个心跳周期（15s）即中止当前任务：
+    # 主备切换时旧任务会沦为"孤儿"（无法停止、报告残缺），止损等新主重连后重新调度
+    GO_STRESS_ABORT_ON_MASTER_LOST: "true"
   ports:
     - name: grpc
       containerPort: 9090
