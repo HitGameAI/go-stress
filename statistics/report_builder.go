@@ -69,6 +69,9 @@ func (rb *ReportBuilder) BuildReport(totalTime time.Duration, includeDetails boo
 		report.RequestDetails = c.GetRequestDetails(0, 10000000, StatusFilterAll, "", "") // 最多取1000万条
 	}
 
+	// 时序数据：启动了秒级记录的压测才有，实时与静态报告共用同一份
+	report.Timeseries = c.TimeSeries()
+
 	// 第四步：计算统计数据
 	rb.calculateStats(report, totalReqs, totalTime)
 

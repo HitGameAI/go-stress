@@ -126,12 +126,37 @@ func (h *LatencyHistogram) Count() uint64 {
 // 遍历期间可能有并发写入，得到的是一个近似瞬时快照：
 // 压测报告要的是分布形状，不需要为此停下发压去取一致性快照
 func (h *LatencyHistogram) Percentiles(ps ...float64) []time.Duration {
+	return percentilesFromSnapshot(h.snapshotInto(nil), ps...)
+}
+
+// snapshotInto 把所有桶的当前值拷入 dst（容量不足时重新分配），返回长度为 histBuckets 的切片
+//
+// 供时序记录器做秒级差分：直方图只增不减，两份快照相减即为窗口内的增量分布
+func (h *LatencyHistogram) snapshotInto(dst []uint64) []uint64 {
+	if cap(dst) < histBuckets {
+		dst = make([]uint64, histBuckets)
+	}
+	dst = dst[:histBuckets]
+	for i := range dst {
+		dst[i] = h.buckets[i].Load()
+	}
+	return dst
+}
+
+// percentilesFromSnapshot 从桶值快照计算百分位
+//
+// Percentiles 方法与它共享同一套算法：方法先取快照再委托到这里；
+// 时序记录器则直接拿差分出的窗口增量快照调用，不必为窗口再建直方图
+func percentilesFromSnapshot(snap []uint64, ps ...float64) []time.Duration {
 	out := make([]time.Duration, len(ps))
 	if len(ps) == 0 {
 		return out
 	}
 
-	total := h.Count()
+	var total uint64
+	for _, c := range snap {
+		total += c
+	}
 	if total == 0 {
 		return out
 	}
@@ -155,8 +180,8 @@ func (h *LatencyHistogram) Percentiles(ps ...float64) []time.Duration {
 
 	var cumulative uint64
 	next := 0
-	for idx := 0; idx < histBuckets && next < len(ps); idx++ {
-		c := h.buckets[idx].Load()
+	for idx := 0; idx < len(snap) && next < len(ps); idx++ {
+		c := snap[idx]
 		if c == 0 {
 			continue
 		}

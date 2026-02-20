@@ -66,6 +66,9 @@ type Report struct {
 	// 运行模式标识
 	RunMode RunMode `json:"run_mode,omitempty"`
 
+	// 秒级时序数据（启动了时序记录的压测才有），供报告页画时间轴曲线
+	Timeseries *TimeSeriesData `json:"timeseries,omitempty"`
+
 	// 配置信息（用于报告显示）
 	Protocol    string `json:"protocol,omitempty"`    // 协议类型: http/grpc/websocket
 	Concurrency uint64 `json:"concurrency,omitempty"` // 并发数

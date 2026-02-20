@@ -251,10 +251,18 @@ func (e *Executor) Run(ctx context.Context) (*statistics.Report, error) {
 
 	startTime := time.Now()
 
+	// 启动秒级时序记录：每秒采样 QPS 与延迟百分位，供实时页与最终报告画时间轴曲线；
+	// 用户中断（ctx 结束）时记录器自动补采并停止
+	e.collector.StartTimeSeries(ctx)
+	defer e.collector.StopTimeSeries() // 兜底：中断路径也要停
+
 	// 运行调度器
 	err := e.scheduler.Run(ctx)
 
 	totalDuration := time.Since(startTime)
+
+	// 停止时序记录并补采最后一段，保证报告曲线完整到压测结束时刻（幂等，上面的 defer 再触发一次不会有副作用）
+	e.collector.StopTimeSeries()
 
 	// 标记测试完成（固定 QPS 计算时间）
 	if e.realtimeServer != nil {

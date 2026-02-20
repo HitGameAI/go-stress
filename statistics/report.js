@@ -345,17 +345,47 @@ function initCharts() {
   if (durationChartDom) {
     durationChart = echarts.init(durationChartDom);
     durationChart.setOption({
-      title: { text: "响应时间趋势", left: "center" },
+      title: { text: "时序趋势", left: "center" },
       tooltip: { trigger: "axis" },
+      legend: { data: ["P50", "P95", "P99", "QPS"], bottom: 0 },
       xAxis: { type: "category", data: [] },
-      yAxis: { type: "value", name: "响应时间 (ms)" },
+      yAxis: [
+        { type: "value", name: "响应时间 (ms)" },
+        { type: "value", name: "QPS" },
+      ],
       series: [
         {
+          name: "P50",
           data: [],
           type: "line",
           smooth: true,
-          areaStyle: { color: "rgba(102, 126, 234, 0.2)" },
-          lineStyle: { color: "#667eea", width: 2 },
+          showSymbol: false,
+          lineStyle: { color: "#38ef7d", width: 2 },
+        },
+        {
+          name: "P95",
+          data: [],
+          type: "line",
+          smooth: true,
+          showSymbol: false,
+          lineStyle: { color: "#ffc107", width: 2 },
+        },
+        {
+          name: "P99",
+          data: [],
+          type: "line",
+          smooth: true,
+          showSymbol: false,
+          lineStyle: { color: "#eb3349", width: 2 },
+        },
+        {
+          name: "QPS",
+          data: [],
+          type: "line",
+          yAxisIndex: 1,
+          smooth: true,
+          showSymbol: false,
+          lineStyle: { color: "#667eea", width: 2, type: "dashed" },
         },
       ],
     });
@@ -394,6 +424,59 @@ function initCharts() {
   });
 }
 
+// ============ 时序趋势图（静态与实时共用） ============
+// 用时序数据刷新趋势图；数据不存在（旧版 JSON / 实时未启动记录）返回 false，由调用方降级
+function updateTimeseriesChart(data) {
+  const ts = data && data.timeseries;
+  if (!durationChart || !ts || !ts.points || ts.points.length === 0) {
+    return false;
+  }
+  const labels = ts.points.map((p) => new Date(p.t * 1000).toLocaleTimeString());
+  durationChart.setOption({
+    xAxis: { type: "category", data: labels },
+    series: [
+      { name: "P50", data: ts.points.map((p) => round2(p.p50)) },
+      { name: "P95", data: ts.points.map((p) => round2(p.p95)) },
+      { name: "P99", data: ts.points.map((p) => round2(p.p99)) },
+      { name: "QPS", data: ts.points.map((p) => round2(p.qps)) },
+    ],
+  });
+  return true;
+}
+
+// 降级视图：没有时序数据时（旧版报告 JSON）退化为「最近请求耗时」单线图
+function showDegradedTrendChart(values) {
+  if (!durationChart) return;
+  durationChart.setOption({
+    title: { text: "最近请求耗时", left: "center" },
+    legend: { show: false },
+    xAxis: { type: "category", data: values.map((_, i) => i + 1) },
+    yAxis: [
+      { type: "value", name: "响应时间 (ms)" },
+      { type: "value", name: "QPS" },
+    ],
+    series: [
+      {
+        name: "耗时",
+        data: values,
+        type: "line",
+        smooth: true,
+        showSymbol: false,
+        areaStyle: { color: "rgba(102, 126, 234, 0.2)" },
+        lineStyle: { color: "#667eea", width: 2 },
+      },
+      { data: [] },
+      { data: [] },
+      { data: [] },
+    ],
+  });
+}
+
+// 保留两位小数（避免图表轴标签出现长浮点）
+function round2(v) {
+  return Math.round((v || 0) * 100) / 100;
+}
+
 // ============ 静态模式数据更新 ============
 function updateStaticMetrics(data) {
   const setTextContent = (id, value) => {
@@ -426,15 +509,12 @@ function updateStaticMetrics(data) {
 }
 
 function updateChartsFromData(data) {
-  if (data.request_details && data.request_details.length > 0 && durationChart) {
+  if (data.request_details && data.request_details.length > 0 && durationChart && !updateTimeseriesChart(data)) {
+    // 旧版 JSON 没有时序数据：退化为「最后 1000 条请求耗时」
     const recentDetails = data.request_details.slice(-1000);
     const durations = recentDetails.map((d) => d.duration / 1000000);
-    const indices = durations.map((_, i) => i + 1);
 
-    durationChart.setOption({
-      xAxis: { data: indices },
-      series: [{ data: durations }],
-    });
+    showDegradedTrendChart(durations);
   }
 
   if (data.status_codes && Object.keys(data.status_codes).length > 0 && statusChart) {
@@ -1266,12 +1346,9 @@ if (isRealtime) {
 
   // 更新实时图表
   window.updateCharts = function (data) {
-    if (data.recent_durations && data.recent_durations.length > 0 && durationChart) {
-      const indices = data.recent_durations.map((_, i) => i + 1);
-      durationChart.setOption({
-        xAxis: { data: indices },
-        series: [{ data: data.recent_durations }],
-      });
+    // 时序趋势图；旧版实时数据（无时序）降级为最近 20 次请求耗时
+    if (!updateTimeseriesChart(data) && data.recent_durations && data.recent_durations.length > 0 && durationChart) {
+      showDegradedTrendChart(data.recent_durations);
     }
 
     if (data.status_codes && statusChart) {

@@ -11,7 +11,9 @@
 package statistics
 
 import (
+	"context"
 	"math"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -67,6 +69,10 @@ type Collector struct {
 
 	// 关闭标志
 	closed *syncx.Bool
+
+	// 秒级时序记录器（StartTimeSeries 后非空），详见 timeseries.go
+	series     atomic.Pointer[timeSeriesRecorder]
+	seriesOnce sync.Once
 
 	// 日志器
 	logger logger.ILogger
@@ -384,4 +390,30 @@ type Metrics struct {
 	TotalRequests   uint64
 	SuccessRequests uint64
 	FailedRequests  uint64
+}
+
+// StartTimeSeries 启动秒级时序记录（幂等，压测开始时调用一次）
+//
+// 采样以定时差分实现，热路径零新增代价；ctx 结束（如用户中断）时自动停止并补采
+func (c *Collector) StartTimeSeries(ctx context.Context) {
+	c.seriesOnce.Do(func() {
+		rec := newTimeSeriesRecorder(c)
+		c.series.Store(rec)
+		go rec.run(ctx)
+	})
+}
+
+// StopTimeSeries 停止时序记录并补采最后一段（幂等，报告生成前调用）
+func (c *Collector) StopTimeSeries() {
+	if rec := c.series.Load(); rec != nil {
+		rec.stop()
+	}
+}
+
+// TimeSeries 返回时序数据副本（未启动记录或尚无数据时为 nil）
+func (c *Collector) TimeSeries() *TimeSeriesData {
+	if rec := c.series.Load(); rec != nil {
+		return rec.data()
+	}
+	return nil
 }
