@@ -160,6 +160,32 @@ const reportHTML = `<!DOCTYPE html>
                 </div>
             </div>
             
+            <div class="section" id="apiSection" style="display: none;">
+                <div class="section-title">
+                    <span>🧩 API 汇总</span>
+                </div>
+                <div style="overflow-x: auto;">
+                    <table>
+                        <thead>
+                            <tr>
+                                <th>API 名称</th>
+                                <th>请求数</th>
+                                <th>成功</th>
+                                <th>失败</th>
+                                <th>跳过</th>
+                                <th>成功率</th>
+                                <th>平均</th>
+                                <th>P50</th>
+                                <th>P95</th>
+                                <th>P99</th>
+                                <th>QPS</th>
+                            </tr>
+                        </thead>
+                        <tbody id="api-tbody"></tbody>
+                    </table>
+                </div>
+            </div>
+
             <div class="section">
                 <div class="section-title">
                     <span>📋 请求明细</span>

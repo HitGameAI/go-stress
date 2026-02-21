@@ -49,6 +49,9 @@ type Collector struct {
 	errors      *syncx.Map[string, uint64]
 	statusCodes *syncx.Map[int, uint64]
 
+	// 按 API 名聚合的统计（详见 api_stats.go）
+	apiStats *apiAggregator
+
 	// 统一的存储接口（支持 SQLite 和 Memory 两种实现）
 	storage StorageInterface
 
@@ -90,6 +93,7 @@ func NewCollector(strg StorageInterface, log logger.ILogger) *Collector {
 		recent:          newRecentDurations(),
 		errors:          syncx.NewMap[string, uint64](),
 		statusCodes:     syncx.NewMap[int, uint64](),
+		apiStats:        newAPIAggregator(),
 		storage:         strg,
 		idGenerator:     idgen.NewSnowflakeGenerator(1, 1),
 		closed:          syncx.NewBool(false),
@@ -149,6 +153,11 @@ func (c *Collector) Collect(result *RequestResult) {
 	// Size 实际来自 len(resp.Body)，恒为整数字节数，故按 uint64 累加不损失精度
 	if result.Size > 0 {
 		c.totalSizeBytes.Add(uint64(result.Size))
+	}
+
+	// 按 API 聚合：多接口场景下报告页需要每个接口各自的延迟与成功率
+	if result.APIName != "" {
+		c.apiStats.record(result.APIName, result)
 	}
 
 	// 生成唯一ID和错误消息

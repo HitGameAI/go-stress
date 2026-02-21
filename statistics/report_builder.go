@@ -72,6 +72,9 @@ func (rb *ReportBuilder) BuildReport(totalTime time.Duration, includeDetails boo
 	// 时序数据：启动了秒级记录的压测才有，实时与静态报告共用同一份
 	report.Timeseries = c.TimeSeries()
 
+	// per-API 聚合：多接口场景才有，明细表之外给出每接口的汇总视图
+	report.APIStats = c.apiStats.stats(totalTime)
+
 	// 第四步：计算统计数据
 	rb.calculateStats(report, totalReqs, totalTime)
 

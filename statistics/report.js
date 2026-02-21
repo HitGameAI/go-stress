@@ -298,6 +298,7 @@ if (!isRealtime) {
 
       updateStaticMetrics(data);
       updateChartsFromData(data);
+      renderAPIStats(data);
 
       allDetailsData = data.all_details || data.request_details || [];
       updateTabCounts();
@@ -475,6 +476,39 @@ function showDegradedTrendChart(values) {
 // 保留两位小数（避免图表轴标签出现长浮点）
 function round2(v) {
   return Math.round((v || 0) * 100) / 100;
+}
+
+// ============ API 汇总表（静态与实时共用） ============
+// 多接口场景：按 API 展示各自的请求数、成功率与延迟百分位
+function renderAPIStats(data) {
+  const section = document.getElementById("apiSection");
+  const tbody = document.getElementById("api-tbody");
+  if (!section || !tbody) return;
+
+  const stats = data && data.api_stats;
+  if (!stats || stats.length === 0) {
+    section.style.display = "none";
+    return;
+  }
+
+  section.style.display = "";
+  tbody.innerHTML = stats
+    .map(
+      (s) => `<tr>
+        <td>${escapeHtml(s.name)}</td>
+        <td>${s.requests}</td>
+        <td style="color: #28a745;">${s.success}</td>
+        <td style="color: #dc3545;">${s.failed}</td>
+        <td>${s.skipped}</td>
+        <td>${s.success_rate.toFixed(2)}%</td>
+        <td>${s.avg_ms.toFixed(2)}ms</td>
+        <td>${s.p50_ms.toFixed(2)}ms</td>
+        <td>${s.p95_ms.toFixed(2)}ms</td>
+        <td>${s.p99_ms.toFixed(2)}ms</td>
+        <td>${round2(s.qps)}</td>
+      </tr>`
+    )
+    .join("");
 }
 
 // ============ 静态模式数据更新 ============
@@ -1350,6 +1384,8 @@ if (isRealtime) {
     if (!updateTimeseriesChart(data) && data.recent_durations && data.recent_durations.length > 0 && durationChart) {
       showDegradedTrendChart(data.recent_durations);
     }
+
+    renderAPIStats(data);
 
     if (data.status_codes && statusChart) {
       const codes = Object.keys(data.status_codes).sort();

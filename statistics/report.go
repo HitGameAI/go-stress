@@ -69,6 +69,9 @@ type Report struct {
 	// 秒级时序数据（启动了时序记录的压测才有），供报告页画时间轴曲线
 	Timeseries *TimeSeriesData `json:"timeseries,omitempty"`
 
+	// 按 API 聚合的统计（多接口场景才有），供报告页展示 API 汇总表
+	APIStats []APIStat `json:"api_stats,omitempty"`
+
 	// 配置信息（用于报告显示）
 	Protocol    string `json:"protocol,omitempty"`    // 协议类型: http/grpc/websocket
 	Concurrency uint64 `json:"concurrency,omitempty"` // 并发数
