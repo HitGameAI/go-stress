@@ -37,9 +37,17 @@ func NewReportExporter(collector *Collector) *ReportExporter {
 	}
 }
 
-// ExportHTML 导出HTML报告（完整版，包含明细）
+// defaultHTMLDetailsLimit HTML 报告默认携带的明细条数
+//
+// 历史行为是把全量明细（最多 1000 万条）MarshalIndent 进 JSON 再由浏览器整体
+// 加载，文件可达 GB 级、页面打开极慢。汇总指标、时序与分布才是报告页的主角，
+// 明细只保留一份近端样本用于回看；需要全量明细时用 ExportJSON，
+// 或调 ExportHTMLWithLimit 自行放宽
+const defaultHTMLDetailsLimit = 2000
+
+// ExportHTML 导出HTML报告（默认携带最近 2000 条明细样本）
 func (e *ReportExporter) ExportHTML(totalTime time.Duration, filename string) error {
-	return e.ExportHTMLWithLimit(totalTime, filename, -1) // -1 表示导出全部详情
+	return e.ExportHTMLWithLimit(totalTime, filename, defaultHTMLDetailsLimit)
 }
 
 // ExportHTMLWithLimit 导出HTML报告（指定详情导出数量）
@@ -54,7 +62,8 @@ func (e *ReportExporter) ExportHTMLWithLimit(totalTime time.Duration, filename s
 	jsonFullPath := filepath.Join(reportDir, jsonFilename)
 
 	// 第三步：生成并保存 JSON 数据文件
-	jsonBytes, err := json.MarshalIndent(report, "", "  ")
+	// 紧凑序列化：浏览器解析更快、文件体积减半以上，人读交给报告页
+	jsonBytes, err := json.Marshal(report)
 	if err != nil {
 		return fmt.Errorf("marshal JSON failed: %w", err)
 	}

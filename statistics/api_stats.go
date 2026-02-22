@@ -22,18 +22,18 @@ import (
 // APIStat 单个 API 的聚合统计（JSON 中耗时一律为毫秒，与 Report 其他字段口径一致）
 type APIStat struct {
 	Name        string  `json:"name"`         // API 名称
-	Requests    uint64  `json:"requests"`    // 总请求数
-	Success     uint64  `json:"success"`     // 成功数
-	Failed      uint64  `json:"failed"`      // 失败数
-	Skipped     uint64  `json:"skipped"`     // 跳过数
+	Requests    uint64  `json:"requests"`     // 总请求数
+	Success     uint64  `json:"success"`      // 成功数
+	Failed      uint64  `json:"failed"`       // 失败数
+	Skipped     uint64  `json:"skipped"`      // 跳过数
 	SuccessRate float64 `json:"success_rate"` // 成功率（百分比，分母不含跳过）
-	AvgMs       float64 `json:"avg_ms"`      // 平均耗时（毫秒）
-	MinMs       float64 `json:"min_ms"`      // 最小耗时（毫秒）
-	MaxMs       float64 `json:"max_ms"`      // 最大耗时（毫秒）
-	P50Ms       float64 `json:"p50_ms"`      // P50（毫秒）
-	P95Ms       float64 `json:"p95_ms"`      // P95（毫秒）
-	P99Ms       float64 `json:"p99_ms"`      // P99（毫秒）
-	QPS         float64 `json:"qps"`         // 该 API 的 QPS
+	AvgMs       float64 `json:"avg_ms"`       // 平均耗时（毫秒）
+	MinMs       float64 `json:"min_ms"`       // 最小耗时（毫秒）
+	MaxMs       float64 `json:"max_ms"`       // 最大耗时（毫秒）
+	P50Ms       float64 `json:"p50_ms"`       // P50（毫秒）
+	P95Ms       float64 `json:"p95_ms"`       // P95（毫秒）
+	P99Ms       float64 `json:"p99_ms"`       // P99（毫秒）
+	QPS         float64 `json:"qps"`          // 该 API 的 QPS
 }
 
 // apiAgg 单个 API 的原子聚合器

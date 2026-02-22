@@ -47,8 +47,8 @@ func TestAPIAggregatorStats(t *testing.T) {
 	assert.EqualValues(t, 10, stats[0].Success)
 	assert.EqualValues(t, 2, stats[0].Failed)
 	assert.InDelta(t, 83.3333, stats[0].SuccessRate, 0.01) // 10/12
-	assert.InDelta(t, 3.3333, stats[0].AvgMs, 0.001)      // (10*2+2*10)/12
-	assert.EqualValues(t, 6, stats[0].QPS)               // 12 / 2 秒
+	assert.InDelta(t, 3.3333, stats[0].AvgMs, 0.001)       // (10*2+2*10)/12
+	assert.EqualValues(t, 6, stats[0].QPS)                 // 12 / 2 秒
 	assert.GreaterOrEqual(t, stats[0].MaxMs, stats[0].MinMs)
 
 	// 跳过不计入成功率分母
